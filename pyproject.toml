@@ -28,8 +28,8 @@ packages = [{ include = "kloakd" }]
 [tool.poetry.urls]
 Homepage = "https://kloakd.dev"
 Documentation = "https://docs.kloakd.dev/sdk/python"
-Repository = "https://github.com/kloakd/kloakd-sdk-python"
-Changelog = "https://github.com/kloakd/kloakd-sdk-python/blob/main/CHANGELOG.md"
+Repository = "https://github.com/kloakd-dev/kloakd-sdk-python"
+Changelog = "https://github.com/kloakd-dev/kloakd-sdk-python/blob/main/CHANGELOG.md"
 
 [tool.poetry.dependencies]
 python = ">=3.9,<4.0"
