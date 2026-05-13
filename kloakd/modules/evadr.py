@@ -140,9 +140,59 @@ class EvadrNamespace:
             recommended_actions=raw.get("recommended_actions", []),
         )
 
+    def scan(
+        self,
+        url: str,
+        status_code: int = 200,
+        headers: Optional[Dict[str, str]] = None,
+        body_snippet: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Scan a URL response for anti-bot vendor signatures.
+
+        Args:
+            url: Target URL.
+            status_code: HTTP status code received.
+            headers: Response headers dict.
+            body_snippet: First 1000 chars of response body.
+
+        Returns:
+            Dict with vendor detection results.
+        """
+        body: Dict[str, Any] = {"url": url, "status_code": status_code}
+        if headers:
+            body["headers"] = headers
+        if body_snippet:
+            body["body_snippet"] = body_snippet
+        return self._t.post("evadr/scan", body)
+
+    def get_job(self, job_id: str) -> Dict[str, Any]:
+        """Poll an async fetch job by ID."""
+        return self._t.get(f"evadr/jobs/{job_id}")
+
+    def get_job_events(self, job_id: str) -> Dict[str, Any]:
+        """Retrieve SSE events for an async fetch job."""
+        return self._t.get(f"evadr/jobs/{job_id}/events")
+
+    def list_vendors(self) -> Dict[str, Any]:
+        """List all known anti-bot detection vendors."""
+        return self._t.get("evadr/vendors")
+
+    def list_profiles(self) -> Dict[str, Any]:
+        """List available evasion profiles."""
+        return self._t.get("evadr/profiles")
+
+    def list_proxies(self) -> Dict[str, Any]:
+        """List stored proxy configurations (names only, no secrets)."""
+        return self._t.get("evadr/proxies")
+
     def store_proxy(self, name: str, proxy_url: str) -> None:
         """Store an encrypted proxy configuration for use in future fetch calls."""
         self._t.post("evadr/proxies", {"name": name, "proxy_url": proxy_url})
+
+    def delete_proxy(self, name: str) -> None:
+        """Delete a stored proxy configuration by name."""
+        self._t.delete(f"evadr/proxies/{name}")
 
 
 class AsyncEvadrNamespace:
@@ -256,6 +306,45 @@ class AsyncEvadrNamespace:
             recommended_actions=raw.get("recommended_actions", []),
         )
 
+    async def scan(
+        self,
+        url: str,
+        status_code: int = 200,
+        headers: Optional[Dict[str, str]] = None,
+        body_snippet: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Async equivalent of EvadrNamespace.scan."""
+        body: Dict[str, Any] = {"url": url, "status_code": status_code}
+        if headers:
+            body["headers"] = headers
+        if body_snippet:
+            body["body_snippet"] = body_snippet
+        return await self._t.post("evadr/scan", body)
+
+    async def get_job(self, job_id: str) -> Dict[str, Any]:
+        """Async equivalent of EvadrNamespace.get_job."""
+        return await self._t.get(f"evadr/jobs/{job_id}")
+
+    async def get_job_events(self, job_id: str) -> Dict[str, Any]:
+        """Async equivalent of EvadrNamespace.get_job_events."""
+        return await self._t.get(f"evadr/jobs/{job_id}/events")
+
+    async def list_vendors(self) -> Dict[str, Any]:
+        """Async equivalent of EvadrNamespace.list_vendors."""
+        return await self._t.get("evadr/vendors")
+
+    async def list_profiles(self) -> Dict[str, Any]:
+        """Async equivalent of EvadrNamespace.list_profiles."""
+        return await self._t.get("evadr/profiles")
+
+    async def list_proxies(self) -> Dict[str, Any]:
+        """Async equivalent of EvadrNamespace.list_proxies."""
+        return await self._t.get("evadr/proxies")
+
     async def store_proxy(self, name: str, proxy_url: str) -> None:
         """Async equivalent of EvadrNamespace.store_proxy."""
         await self._t.post("evadr/proxies", {"name": name, "proxy_url": proxy_url})
+
+    async def delete_proxy(self, name: str) -> None:
+        """Async equivalent of EvadrNamespace.delete_proxy."""
+        await self._t.delete(f"evadr/proxies/{name}")

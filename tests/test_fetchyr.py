@@ -163,7 +163,7 @@ def test_check_duplicates(client: Kloakd) -> None:
         {"title": "Book A", "price": "$10"},
         {"title": "Book B", "price": "$15"},
     ]
-    respx.post(f"{TEST_BASE_URL}{ORG_PREFIX}/fetchyr/deduplicate").mock(
+    respx.post(f"{TEST_BASE_URL}{ORG_PREFIX}/fetchyr/deduplication/check").mock(
         return_value=mock_response({
             "unique_records": [
                 {"title": "Book A", "price": "$10"},

@@ -174,6 +174,72 @@ class NexusNamespace:
             error=raw.get("error"),
         )
 
+    def reason(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Perform logical reasoning via the Strategy Engine.
+
+        Args:
+            context: Reasoning context with problem definition.
+
+        Returns:
+            Dict with reasoning result.
+        """
+        return self._t.post("nexus/reason", context)
+
+    # ── Recommendations ───────────────────────────────────────────────
+
+    def recommend_analyze(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze and get recommendations."""
+        return self._t.post("nexus/recommendations/analyze", data)
+
+    def list_recommendation_applications(self) -> Dict[str, Any]:
+        """List recommendation applications."""
+        return self._t.get("nexus/recommendations/applications")
+
+    def get_cache_statistics(self) -> Dict[str, Any]:
+        """Get recommendation cache statistics."""
+        return self._t.get("nexus/recommendations/cache/statistics")
+
+    def cleanup_cache(self) -> Dict[str, Any]:
+        """Cleanup recommendation cache."""
+        return self._t.post("nexus/recommendations/cache/cleanup", {})
+
+    def invalidate_cache(self) -> Dict[str, Any]:
+        """Invalidate recommendation cache."""
+        return self._t.post("nexus/recommendations/cache/invalidate", {})
+
+    def get_hooks_status(self) -> Dict[str, Any]:
+        """Get hooks status."""
+        return self._t.get("nexus/recommendations/hooks/status")
+
+    def enable_hook(self, hook_name: str) -> Dict[str, Any]:
+        """Enable a recommendation hook."""
+        return self._t.post(f"nexus/recommendations/hooks/{hook_name}/enable", {})
+
+    def disable_hook(self, hook_name: str) -> Dict[str, Any]:
+        """Disable a recommendation hook."""
+        return self._t.post(f"nexus/recommendations/hooks/{hook_name}/disable", {})
+
+    def create_preference(self, preference: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a recommendation preference."""
+        return self._t.post("nexus/recommendations/preferences", preference)
+
+    def get_preferences(self, user_id: str) -> Dict[str, Any]:
+        """Get user preferences."""
+        return self._t.get(f"nexus/recommendations/preferences/{user_id}")
+
+    def update_preference(self, preference_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Update a recommendation preference."""
+        return self._t.put(f"nexus/recommendations/preferences/{preference_id}", data)
+
+    def delete_preference(self, preference_id: str) -> None:
+        """Delete a recommendation preference."""
+        self._t.delete(f"nexus/recommendations/preferences/{preference_id}")
+
+    def get_recommendation_statistics(self) -> Dict[str, Any]:
+        """Get recommendation statistics."""
+        return self._t.get("nexus/recommendations/statistics")
+
 
 class AsyncNexusNamespace:
     """Async Nexus operations. Access via ``async_client.nexus``."""
@@ -267,3 +333,59 @@ class AsyncNexusNamespace:
             duration_ms=raw.get("duration_ms", 0),
             error=raw.get("error"),
         )
+
+    async def reason(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Async equivalent of NexusNamespace.reason."""
+        return await self._t.post("nexus/reason", context)
+
+    async def recommend_analyze(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Async equivalent of NexusNamespace.recommend_analyze."""
+        return await self._t.post("nexus/recommendations/analyze", data)
+
+    async def list_recommendation_applications(self) -> Dict[str, Any]:
+        """Async equivalent of NexusNamespace.list_recommendation_applications."""
+        return await self._t.get("nexus/recommendations/applications")
+
+    async def get_cache_statistics(self) -> Dict[str, Any]:
+        """Async equivalent of NexusNamespace.get_cache_statistics."""
+        return await self._t.get("nexus/recommendations/cache/statistics")
+
+    async def cleanup_cache(self) -> Dict[str, Any]:
+        """Async equivalent of NexusNamespace.cleanup_cache."""
+        return await self._t.post("nexus/recommendations/cache/cleanup", {})
+
+    async def invalidate_cache(self) -> Dict[str, Any]:
+        """Async equivalent of NexusNamespace.invalidate_cache."""
+        return await self._t.post("nexus/recommendations/cache/invalidate", {})
+
+    async def get_hooks_status(self) -> Dict[str, Any]:
+        """Async equivalent of NexusNamespace.get_hooks_status."""
+        return await self._t.get("nexus/recommendations/hooks/status")
+
+    async def enable_hook(self, hook_name: str) -> Dict[str, Any]:
+        """Async equivalent of NexusNamespace.enable_hook."""
+        return await self._t.post(f"nexus/recommendations/hooks/{hook_name}/enable", {})
+
+    async def disable_hook(self, hook_name: str) -> Dict[str, Any]:
+        """Async equivalent of NexusNamespace.disable_hook."""
+        return await self._t.post(f"nexus/recommendations/hooks/{hook_name}/disable", {})
+
+    async def create_preference(self, preference: Dict[str, Any]) -> Dict[str, Any]:
+        """Async equivalent of NexusNamespace.create_preference."""
+        return await self._t.post("nexus/recommendations/preferences", preference)
+
+    async def get_preferences(self, user_id: str) -> Dict[str, Any]:
+        """Async equivalent of NexusNamespace.get_preferences."""
+        return await self._t.get(f"nexus/recommendations/preferences/{user_id}")
+
+    async def update_preference(self, preference_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Async equivalent of NexusNamespace.update_preference."""
+        return await self._t.put(f"nexus/recommendations/preferences/{preference_id}", data)
+
+    async def delete_preference(self, preference_id: str) -> None:
+        """Async equivalent of NexusNamespace.delete_preference."""
+        await self._t.delete(f"nexus/recommendations/preferences/{preference_id}")
+
+    async def get_recommendation_statistics(self) -> Dict[str, Any]:
+        """Async equivalent of NexusNamespace.get_recommendation_statistics."""
+        return await self._t.get("nexus/recommendations/statistics")

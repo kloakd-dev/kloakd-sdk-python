@@ -153,6 +153,12 @@ class _HttpTransport:
     def post(self, path: str, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         return self.request("POST", path, json_body=body or {})
 
+    def put(self, path: str, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        return self.request("PUT", path, json_body=body or {})
+
+    def patch(self, path: str, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        return self.request("PATCH", path, json_body=body or {})
+
     def delete(self, path: str) -> None:
         self.request("DELETE", path)
 
@@ -303,6 +309,12 @@ class _AsyncHttpTransport:
 
     async def post(self, path: str, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         return await self.request("POST", path, json_body=body or {})
+
+    async def put(self, path: str, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        return await self.request("PUT", path, json_body=body or {})
+
+    async def patch(self, path: str, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        return await self.request("PATCH", path, json_body=body or {})
 
     async def delete(self, path: str) -> None:
         await self.request("DELETE", path)

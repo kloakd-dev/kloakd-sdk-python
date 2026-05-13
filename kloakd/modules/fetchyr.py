@@ -300,6 +300,134 @@ class FetchyrNamespace:
             error=raw.get("error"),
         )
 
+    # ── Credential management ─────────────────────────────────────────
+
+    def store_credentials(self, name: str, credentials: Dict[str, str]) -> Dict[str, Any]:
+        """
+        Store login credentials securely via SecretManager.
+
+        Args:
+            name: Unique name for the credential set.
+            credentials: Dict with username, password, and optional fields.
+
+        Returns:
+            Confirmation dict with name and created_at.
+        """
+        return self._t.post("fetchyr/account/credentials", {
+            "name": name, **credentials
+        })
+
+    def list_credentials(self) -> Dict[str, Any]:
+        """List stored credential names (no secret values exposed)."""
+        return self._t.get("fetchyr/account/credentials")
+
+    def delete_credentials(self, name: str) -> None:
+        """Delete stored credentials by name."""
+        self._t.delete(f"fetchyr/account/credentials/{name}")
+
+    # ── Session management ─────────────────────────────────────────────
+
+    def list_sessions(self) -> Dict[str, Any]:
+        """List active browser sessions (no credentials in response)."""
+        return self._t.get("fetchyr/sessions")
+
+    def terminate_session(self, artifact_id: str) -> None:
+        """Terminate a session and release Chrome slot."""
+        self._t.delete(f"fetchyr/sessions/{artifact_id}")
+
+    # ── Form automation ────────────────────────────────────────────────
+
+    def fill_form(
+        self,
+        url: str,
+        form_data: Dict[str, str],
+        session_artifact_id: Optional[str] = None,
+        submit: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Fill and optionally submit a form on a page.
+
+        Args:
+            url: Target page URL.
+            form_data: Dict mapping field selectors to values.
+            session_artifact_id: Optional authenticated session.
+            submit: Whether to submit the form. Default True.
+
+        Returns:
+            Dict with submission result.
+        """
+        body: Dict[str, Any] = {"url": url, "form_data": form_data, "submit": submit}
+        if session_artifact_id:
+            body["session_artifact_id"] = session_artifact_id
+        return self._t.post("fetchyr/form/fill", body)
+
+    # ── MFA queue ──────────────────────────────────────────────────────
+
+    def list_mfa_challenges(self) -> Dict[str, Any]:
+        """List pending MFA challenges awaiting resolution."""
+        return self._t.get("fetchyr/mfa-queue")
+
+    def get_mfa_challenge(self, challenge_id: str) -> Dict[str, Any]:
+        """Get a specific MFA challenge by ID."""
+        return self._t.get(f"fetchyr/mfa/challenges/{challenge_id}")
+
+    def get_mfa_statistics(self, domain: str) -> Dict[str, Any]:
+        """Get MFA statistics for a domain."""
+        return self._t.get(f"fetchyr/mfa/statistics/{domain}")
+
+    # ── Workflow CRUD ──────────────────────────────────────────────────
+
+    def list_workflows(self) -> Dict[str, Any]:
+        """List all RPA workflow definitions."""
+        return self._t.get("fetchyr/workflows")
+
+    def get_workflow(self, workflow_id: str) -> Dict[str, Any]:
+        """Get a workflow definition by ID."""
+        return self._t.get(f"fetchyr/workflows/{workflow_id}")
+
+    def update_workflow(
+        self, workflow_id: str, updates: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Update an existing workflow definition.
+
+        Args:
+            workflow_id: Workflow identifier.
+            updates: Fields to update (name, steps, url).
+
+        Returns:
+            Updated workflow dict.
+        """
+        return self._t.patch(f"fetchyr/workflows/{workflow_id}", updates)
+
+    def delete_workflow(self, workflow_id: str) -> None:
+        """Delete a workflow definition."""
+        self._t.delete(f"fetchyr/workflows/{workflow_id}")
+
+    def get_workflow_statistics(self, workflow_id: str) -> Dict[str, Any]:
+        """Get execution statistics for a workflow."""
+        return self._t.get(f"fetchyr/workflows/{workflow_id}/statistics")
+
+    # ── Multi-site orchestration ───────────────────────────────────────
+
+    def create_multi_site_workflow(
+        self, sites: List[Dict[str, Any]], name: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Create a multi-site orchestration workflow.
+
+        Args:
+            sites: List of site configs with url, credentials, and steps.
+            name: Optional workflow name.
+
+        Returns:
+            Dict with workflow_id and configuration.
+        """
+        body: Dict[str, Any] = {"sites": sites}
+        if name:
+            body["name"] = name
+        return self._t.post("fetchyr/multi-site-workflows", body)
+
     # ── Deduplication ─────────────────────────────────────────────────
 
     def check_duplicates(
@@ -321,13 +449,33 @@ class FetchyrNamespace:
         if domain:
             body["domain"] = domain
 
-        raw = self._t.post("fetchyr/deduplicate", body)
+        raw = self._t.post("fetchyr/deduplication/check", body)
         return DeduplicationResult(
             unique_records=raw.get("unique_records", []),
             duplicate_count=raw.get("duplicate_count", 0),
             total_input=raw.get("total_input", len(records)),
             error=raw.get("error"),
         )
+
+    def create_dedup_session(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a deduplication session for tracking duplicates across runs."""
+        return self._t.post("fetchyr/deduplication/sessions", config)
+
+    def list_dedup_sessions(self) -> Dict[str, Any]:
+        """List active deduplication sessions."""
+        return self._t.get("fetchyr/deduplication/sessions/active")
+
+    def get_dedup_session(self, session_id: str) -> Dict[str, Any]:
+        """Get a deduplication session by ID."""
+        return self._t.get(f"fetchyr/deduplication/sessions/{session_id}")
+
+    def get_dedup_session_statistics(self, session_id: str) -> Dict[str, Any]:
+        """Get statistics for a deduplication session."""
+        return self._t.get(f"fetchyr/deduplication/sessions/{session_id}/statistics")
+
+    def get_dedup_domain_statistics(self, domain: str) -> Dict[str, Any]:
+        """Get deduplication statistics for a domain."""
+        return self._t.get(f"fetchyr/deduplication/statistics/{domain}")
 
 
 class AsyncFetchyrNamespace:
@@ -490,6 +638,84 @@ class AsyncFetchyrNamespace:
             error=raw.get("error"),
         )
 
+    async def store_credentials(self, name: str, credentials: Dict[str, str]) -> Dict[str, Any]:
+        """Async equivalent of FetchyrNamespace.store_credentials."""
+        return await self._t.post("fetchyr/account/credentials", {
+            "name": name, **credentials
+        })
+
+    async def list_credentials(self) -> Dict[str, Any]:
+        """Async equivalent of FetchyrNamespace.list_credentials."""
+        return await self._t.get("fetchyr/account/credentials")
+
+    async def delete_credentials(self, name: str) -> None:
+        """Async equivalent of FetchyrNamespace.delete_credentials."""
+        await self._t.delete(f"fetchyr/account/credentials/{name}")
+
+    async def list_sessions(self) -> Dict[str, Any]:
+        """Async equivalent of FetchyrNamespace.list_sessions."""
+        return await self._t.get("fetchyr/sessions")
+
+    async def terminate_session(self, artifact_id: str) -> None:
+        """Async equivalent of FetchyrNamespace.terminate_session."""
+        await self._t.delete(f"fetchyr/sessions/{artifact_id}")
+
+    async def fill_form(
+        self,
+        url: str,
+        form_data: Dict[str, str],
+        session_artifact_id: Optional[str] = None,
+        submit: bool = True,
+    ) -> Dict[str, Any]:
+        """Async equivalent of FetchyrNamespace.fill_form."""
+        body: Dict[str, Any] = {"url": url, "form_data": form_data, "submit": submit}
+        if session_artifact_id:
+            body["session_artifact_id"] = session_artifact_id
+        return await self._t.post("fetchyr/form/fill", body)
+
+    async def list_mfa_challenges(self) -> Dict[str, Any]:
+        """Async equivalent of FetchyrNamespace.list_mfa_challenges."""
+        return await self._t.get("fetchyr/mfa-queue")
+
+    async def get_mfa_challenge(self, challenge_id: str) -> Dict[str, Any]:
+        """Async equivalent of FetchyrNamespace.get_mfa_challenge."""
+        return await self._t.get(f"fetchyr/mfa/challenges/{challenge_id}")
+
+    async def get_mfa_statistics(self, domain: str) -> Dict[str, Any]:
+        """Async equivalent of FetchyrNamespace.get_mfa_statistics."""
+        return await self._t.get(f"fetchyr/mfa/statistics/{domain}")
+
+    async def list_workflows(self) -> Dict[str, Any]:
+        """Async equivalent of FetchyrNamespace.list_workflows."""
+        return await self._t.get("fetchyr/workflows")
+
+    async def get_workflow(self, workflow_id: str) -> Dict[str, Any]:
+        """Async equivalent of FetchyrNamespace.get_workflow."""
+        return await self._t.get(f"fetchyr/workflows/{workflow_id}")
+
+    async def update_workflow(
+        self, workflow_id: str, updates: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Async equivalent of FetchyrNamespace.update_workflow."""
+        return await self._t.patch(f"fetchyr/workflows/{workflow_id}", updates)
+
+    async def delete_workflow(self, workflow_id: str) -> None:
+        """Async equivalent of FetchyrNamespace.delete_workflow."""
+        await self._t.delete(f"fetchyr/workflows/{workflow_id}")
+
+    async def get_workflow_statistics(self, workflow_id: str) -> Dict[str, Any]:
+        """Async equivalent of FetchyrNamespace.get_workflow_statistics."""
+        return await self._t.get(f"fetchyr/workflows/{workflow_id}/statistics")
+
+    async def create_multi_site_workflow(
+        self, sites: List[Dict[str, Any]], name: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Async equivalent of FetchyrNamespace.create_multi_site_workflow."""
+        body: Dict[str, Any] = {"sites": sites}
+        if name:
+            body["name"] = name
+        return await self._t.post("fetchyr/multi-site-workflows", body)
+
     async def check_duplicates(
         self, records: List[Dict[str, Any]], domain: Optional[str] = None
     ) -> DeduplicationResult:
@@ -497,10 +723,30 @@ class AsyncFetchyrNamespace:
         body: Dict[str, Any] = {"records": records}
         if domain:
             body["domain"] = domain
-        raw = await self._t.post("fetchyr/deduplicate", body)
+        raw = await self._t.post("fetchyr/deduplication/check", body)
         return DeduplicationResult(
             unique_records=raw.get("unique_records", []),
             duplicate_count=raw.get("duplicate_count", 0),
             total_input=raw.get("total_input", len(records)),
             error=raw.get("error"),
         )
+
+    async def create_dedup_session(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Async equivalent of FetchyrNamespace.create_dedup_session."""
+        return await self._t.post("fetchyr/deduplication/sessions", config)
+
+    async def list_dedup_sessions(self) -> Dict[str, Any]:
+        """Async equivalent of FetchyrNamespace.list_dedup_sessions."""
+        return await self._t.get("fetchyr/deduplication/sessions/active")
+
+    async def get_dedup_session(self, session_id: str) -> Dict[str, Any]:
+        """Async equivalent of FetchyrNamespace.get_dedup_session."""
+        return await self._t.get(f"fetchyr/deduplication/sessions/{session_id}")
+
+    async def get_dedup_session_statistics(self, session_id: str) -> Dict[str, Any]:
+        """Async equivalent of FetchyrNamespace.get_dedup_session_statistics."""
+        return await self._t.get(f"fetchyr/deduplication/sessions/{session_id}/statistics")
+
+    async def get_dedup_domain_statistics(self, domain: str) -> Dict[str, Any]:
+        """Async equivalent of FetchyrNamespace.get_dedup_domain_statistics."""
+        return await self._t.get(f"fetchyr/deduplication/statistics/{domain}")

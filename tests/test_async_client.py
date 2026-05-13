@@ -214,7 +214,7 @@ async def test_async_fetchyr_detect_mfa(async_client: AsyncKloakd) -> None:
 @pytest.mark.asyncio
 async def test_async_fetchyr_check_duplicates(async_client: AsyncKloakd) -> None:
     records = [{"title": "A"}, {"title": "A"}, {"title": "B"}]
-    respx.post(f"{TEST_BASE_URL}{ORG_PREFIX}/fetchyr/deduplicate").mock(
+    respx.post(f"{TEST_BASE_URL}{ORG_PREFIX}/fetchyr/deduplication/check").mock(
         return_value=mock_response({
             "unique_records": [{"title": "A"}, {"title": "B"}],
             "duplicate_count": 1,

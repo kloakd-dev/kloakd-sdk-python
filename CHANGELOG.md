@@ -8,6 +8,21 @@ Format: [Semantic Versioning](https://semver.org/). Types: `Added`, `Changed`, `
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-05-13
+
+### Added
+- Full API coverage for all 117 kernel module operations across 7 modules
+- Evadr: `scan()`, `get_job()`, `get_job_events()`, `list_vendors()`, `list_profiles()`, `list_proxies()`, `delete_proxy()`
+- Fetchyr: credential management (`store_credentials`, `list_credentials`, `delete_credentials`), session management (`list_sessions`, `terminate_session`), form automation (`fill_form`), MFA queue (`list_mfa_challenges`, `get_mfa_challenge`, `get_mfa_statistics`), workflow CRUD (`list_workflows`, `get_workflow`, `update_workflow`, `delete_workflow`, `get_workflow_statistics`), multi-site orchestration (`create_multi_site_workflow`), dedup sessions (`create_dedup_session`, `list_dedup_sessions`, `get_dedup_session`, `get_dedup_session_statistics`, `get_dedup_domain_statistics`)
+- Kolektr: API data retrieval (`get_api_data`, `get_api_data_paginated`, `extract_all_api_data`), content management, job management with progress tracking, pipeline events, progress phases, scraper config CRUD
+- Nexus: `reason()`, full recommendations subsystem (analyze, applications, cache management, hooks, preferences CRUD, statistics)
+- Skanyr: `get_discovery()`, `get_discovery_events()`, `analyze_bundle()`, `discover_page_live()`, `detected_apis()`, `hierarchy()`, `expand_node()`, `reader_view()`, `retry()`, `health()`, session management CRUD
+- Webgrph: `get_crawl_status()`, `get_crawl_events()`, `get_crawl_pages()`, full analytics subsystem (dashboard, errors, trends, discovery patterns, efficiency, site mapping, user behavior)
+- HTTP transport: `put()` and `patch()` methods for full CRUD support
+
+### Changed
+- Fetchyr `check_duplicates()` now hits correct endpoint path `fetchyr/deduplication/check`
+
 ## [0.1.0] — 2026-04-09
 
 ### Added

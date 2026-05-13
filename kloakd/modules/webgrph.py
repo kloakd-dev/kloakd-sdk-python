@@ -131,6 +131,18 @@ class WebgrphNamespace:
             offset += len(result.pages)
         return all_pages
 
+    def get_crawl_status(self, crawl_id: str) -> Dict[str, Any]:
+        """Poll crawl status and stats."""
+        return self._t.get(f"webgrph/crawl/{crawl_id}")
+
+    def get_crawl_events(self, crawl_id: str) -> Dict[str, Any]:
+        """Get SSE events for a crawl."""
+        return self._t.get(f"webgrph/crawl/{crawl_id}/events")
+
+    def get_crawl_pages(self, crawl_id: str) -> Dict[str, Any]:
+        """Get paginated list of discovered pages."""
+        return self._t.get(f"webgrph/crawl/{crawl_id}/pages")
+
     def get_hierarchy(self, artifact_id: str) -> Dict[str, Any]:
         """Retrieve a stored SITE_HIERARCHY artifact by ID."""
         return self._t.get(f"webgrph/hierarchy/{artifact_id}")
@@ -138,6 +150,36 @@ class WebgrphNamespace:
     def get_job(self, job_id: str) -> Dict[str, Any]:
         """Poll a crawl job by its job ID."""
         return self._t.get(f"webgrph/jobs/{job_id}")
+
+    # ── Analytics ─────────────────────────────────────────────────────
+
+    def get_dashboard_summary(self) -> Dict[str, Any]:
+        """Get analytics dashboard summary."""
+        return self._t.get("webgrph/analytics/dashboard/summary")
+
+    def get_error_summary(self) -> Dict[str, Any]:
+        """Get error summary analytics."""
+        return self._t.get("webgrph/analytics/error-summary")
+
+    def get_job_trends(self) -> Dict[str, Any]:
+        """Get job trends analytics."""
+        return self._t.get("webgrph/analytics/job-trends")
+
+    def get_discovery_patterns(self) -> Dict[str, Any]:
+        """Get content discovery pattern analytics."""
+        return self._t.get("webgrph/analytics/content/discovery-patterns")
+
+    def get_efficiency_metrics(self) -> Dict[str, Any]:
+        """Get scraping efficiency metrics."""
+        return self._t.get("webgrph/analytics/scraping/efficiency-metrics")
+
+    def get_site_mapping_trends(self) -> Dict[str, Any]:
+        """Get site mapping trends."""
+        return self._t.get("webgrph/analytics/site-maps/trends")
+
+    def get_user_behavior_insights(self) -> Dict[str, Any]:
+        """Get user behavior insights."""
+        return self._t.get("webgrph/analytics/users/behavior-insights")
 
 
 class AsyncWebgrphNamespace:
@@ -228,6 +270,18 @@ class AsyncWebgrphNamespace:
 
                 yield _event_iter()
 
+    async def get_crawl_status(self, crawl_id: str) -> Dict[str, Any]:
+        """Async equivalent of WebgrphNamespace.get_crawl_status."""
+        return await self._t.get(f"webgrph/crawl/{crawl_id}")
+
+    async def get_crawl_events(self, crawl_id: str) -> Dict[str, Any]:
+        """Async equivalent of WebgrphNamespace.get_crawl_events."""
+        return await self._t.get(f"webgrph/crawl/{crawl_id}/events")
+
+    async def get_crawl_pages(self, crawl_id: str) -> Dict[str, Any]:
+        """Async equivalent of WebgrphNamespace.get_crawl_pages."""
+        return await self._t.get(f"webgrph/crawl/{crawl_id}/pages")
+
     async def get_hierarchy(self, artifact_id: str) -> Dict[str, Any]:
         """Async equivalent of WebgrphNamespace.get_hierarchy."""
         return await self._t.get(f"webgrph/hierarchy/{artifact_id}")
@@ -235,3 +289,31 @@ class AsyncWebgrphNamespace:
     async def get_job(self, job_id: str) -> Dict[str, Any]:
         """Async equivalent of WebgrphNamespace.get_job."""
         return await self._t.get(f"webgrph/jobs/{job_id}")
+
+    async def get_dashboard_summary(self) -> Dict[str, Any]:
+        """Async equivalent of WebgrphNamespace.get_dashboard_summary."""
+        return await self._t.get("webgrph/analytics/dashboard/summary")
+
+    async def get_error_summary(self) -> Dict[str, Any]:
+        """Async equivalent of WebgrphNamespace.get_error_summary."""
+        return await self._t.get("webgrph/analytics/error-summary")
+
+    async def get_job_trends(self) -> Dict[str, Any]:
+        """Async equivalent of WebgrphNamespace.get_job_trends."""
+        return await self._t.get("webgrph/analytics/job-trends")
+
+    async def get_discovery_patterns(self) -> Dict[str, Any]:
+        """Async equivalent of WebgrphNamespace.get_discovery_patterns."""
+        return await self._t.get("webgrph/analytics/content/discovery-patterns")
+
+    async def get_efficiency_metrics(self) -> Dict[str, Any]:
+        """Async equivalent of WebgrphNamespace.get_efficiency_metrics."""
+        return await self._t.get("webgrph/analytics/scraping/efficiency-metrics")
+
+    async def get_site_mapping_trends(self) -> Dict[str, Any]:
+        """Async equivalent of WebgrphNamespace.get_site_mapping_trends."""
+        return await self._t.get("webgrph/analytics/site-maps/trends")
+
+    async def get_user_behavior_insights(self) -> Dict[str, Any]:
+        """Async equivalent of WebgrphNamespace.get_user_behavior_insights."""
+        return await self._t.get("webgrph/analytics/users/behavior-insights")
