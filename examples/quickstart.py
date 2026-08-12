@@ -5,12 +5,16 @@ Demonstrates the artifact chaining pattern: modules compose like Unix pipes.
 The output of one module (artifact_id) becomes the input to the next,
 eliminating redundant HTTP round-trips.
 
+Crawl is async (returns 202 immediately). Poll get_crawl_status() until
+complete, or use the async client's crawl_stream() for real-time SSE events.
+
 Run:
     pip install kloakd-sdk
     KLOAKD_API_KEY=sk-live-... KLOAKD_ORG_ID=your-org-id python examples/quickstart.py
 """
 
 import os
+import time
 
 from kloakd import Kloakd
 from kloakd.errors import KloakdError
@@ -27,7 +31,7 @@ print(f"Fetching {TARGET} ...")
 fetch = client.evadr.fetch(TARGET)
 print(f"  tier_used={fetch.tier_used}  bypassed={fetch.anti_bot_bypassed}  artifact={fetch.artifact_id}")
 
-# ── Step 2: Site hierarchy ─────────────────────────────────────────────────────
+# ── Step 2: Site hierarchy (async — poll for completion) ──────────────────────
 print("Crawling site hierarchy ...")
 crawl = client.webgrph.crawl(
     TARGET,
@@ -35,7 +39,17 @@ crawl = client.webgrph.crawl(
     max_pages=50,
     session_artifact_id=fetch.artifact_id,  # reuse — no double-fetch
 )
-print(f"  pages_found={crawl.total_pages}  artifact={crawl.artifact_id}")
+print(f"  crawl started: {crawl.crawl_id}")
+
+# Poll until the crawl completes
+while True:
+    status = client.webgrph.get_crawl_status(crawl.crawl_id)
+    print(f"  progress: {status.get('completed_pages', 0)}/{status.get('total_pages', 0)} pages")
+    if status.get("status") == "completed":
+        break
+    time.sleep(2)
+
+print(f"  artifact={crawl.artifact_id}")
 
 # ── Step 3: API discovery ──────────────────────────────────────────────────────
 print("Discovering APIs ...")

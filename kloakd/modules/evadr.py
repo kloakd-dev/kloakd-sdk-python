@@ -66,6 +66,7 @@ class EvadrNamespace:
             body["session_artifact_id"] = session_artifact_id
 
         raw = self._t.post("evadr/fetch", body)
+        artifact = raw.get("artifact")
         return FetchResult(
             success=raw.get("success", False),
             url=raw.get("url", url),
@@ -74,7 +75,7 @@ class EvadrNamespace:
             html=raw.get("html"),
             vendor_detected=raw.get("vendor_detected"),
             anti_bot_bypassed=raw.get("anti_bot_bypassed", False),
-            artifact_id=raw.get("artifact_id"),
+            artifact_id=artifact.get("artifact_id") if artifact else raw.get("artifact_id"),
             error=raw.get("error"),
         )
 
@@ -218,6 +219,7 @@ class AsyncEvadrNamespace:
             body["session_artifact_id"] = session_artifact_id
 
         raw = await self._t.post("evadr/fetch", body)
+        artifact = raw.get("artifact")
         return FetchResult(
             success=raw.get("success", False),
             url=raw.get("url", url),
@@ -226,7 +228,7 @@ class AsyncEvadrNamespace:
             html=raw.get("html"),
             vendor_detected=raw.get("vendor_detected"),
             anti_bot_bypassed=raw.get("anti_bot_bypassed", False),
-            artifact_id=raw.get("artifact_id"),
+            artifact_id=artifact.get("artifact_id") if artifact else raw.get("artifact_id"),
             error=raw.get("error"),
         )
 
