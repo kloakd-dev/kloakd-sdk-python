@@ -40,6 +40,7 @@ def _parse_crawl(raw: Dict[str, Any], url: str, limit: int) -> CrawlResult:
         for p in raw.get("pages", [])
     ]
     total = raw.get("total", raw.get("total_pages", 0))
+    artifact = raw.get("artifact")
     return CrawlResult(
         success=raw.get("success", False),
         crawl_id=raw.get("crawl_id", ""),
@@ -47,7 +48,7 @@ def _parse_crawl(raw: Dict[str, Any], url: str, limit: int) -> CrawlResult:
         total_pages=raw.get("total_pages", len(pages)),
         max_depth_reached=raw.get("max_depth_reached", 0),
         pages=pages,
-        artifact_id=raw.get("artifact_id"),
+        artifact_id=artifact.get("artifact_id") if artifact else raw.get("artifact_id"),
         has_more=raw.get("has_more", False),
         total=total,
         error=raw.get("error"),
