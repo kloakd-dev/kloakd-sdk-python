@@ -40,6 +40,8 @@ from kloakd.models import (
     ChatEvent,
     ChatTurn,
     CrawlEvent,
+    CrawlPage,
+    CrawlProgressEvent,
     CrawlResult,
     DeduplicationResult,
     DiscoverEvent,
@@ -59,6 +61,7 @@ from kloakd.models import (
     PageNode,
     ParseResult,
     SessionResult,
+    SiteCrawlResult,
     WorkflowExecutionResult,
     WorkflowResult,
 )
@@ -83,6 +86,10 @@ __all__ = [
     "CrawlResult",
     "CrawlEvent",
     "PageNode",
+    # Crawl orchestrator models
+    "CrawlPage",
+    "SiteCrawlResult",
+    "CrawlProgressEvent",
     # Skanyr models
     "DiscoverResult",
     "DiscoverEvent",

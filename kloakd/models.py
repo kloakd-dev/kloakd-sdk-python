@@ -9,7 +9,7 @@ serialised to dict via dataclasses.asdict() or inspected directly.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +101,61 @@ class CrawlEvent:
     url: Optional[str] = None
     depth: Optional[int] = None
     pages_found: Optional[int] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Crawl Orchestrator — High-level site crawl
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class CrawlPage:
+    """A single page result from a crawl() orchestrator call."""
+
+    success: bool
+    url: str
+    status_code: int = 0
+    tier_used: int = 0
+    html: Optional[str] = None
+    structured_data: Optional[Dict[str, Any]] = None
+    artifact_id: Optional[str] = None
+    error: Optional[str] = None
+
+    @property
+    def ok(self) -> bool:
+        """True when the page was fetched successfully."""
+        return self.success and self.error is None
+
+
+@dataclass
+class SiteCrawlResult:
+    """Result of a crawl() orchestrator call — discover, fetch, and optionally extract."""
+
+    success: bool
+    url: str
+    total_pages_discovered: int = 0
+    pages_fetched: int = 0
+    pages_failed: int = 0
+    pages: List[CrawlPage] = field(default_factory=list)
+    crawl_artifact_id: Optional[str] = None
+    error: Optional[str] = None
+
+    @property
+    def ok(self) -> bool:
+        return self.success and self.error is None
+
+
+@dataclass
+class CrawlProgressEvent:
+    """A single progress event from crawl_stream()."""
+
+    type: str
+    url: Optional[str] = None
+    page: Optional[int] = None
+    total: Optional[int] = None
+    success: Optional[bool] = None
+    error: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 

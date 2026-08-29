@@ -19,9 +19,10 @@ Both expose identical namespace APIs::
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Dict, Iterator, Optional
 
 from kloakd._http import _AsyncHttpTransport, _HttpTransport
+from kloakd.models import CrawlPage, CrawlProgressEvent, SiteCrawlResult
 from kloakd.modules.evadr import AsyncEvadrNamespace, EvadrNamespace
 from kloakd.modules.fetchyr import AsyncFetchyrNamespace, FetchyrNamespace
 from kloakd.modules.kolektr import AsyncKolektrNamespace, KolektrNamespace
@@ -100,6 +101,253 @@ class Kloakd:
         self.fetchyr = FetchyrNamespace(self._transport)
         self.kolektr = KolektrNamespace(self._transport)
 
+    def crawl(
+        self,
+        url: str,
+        max_depth: int = 3,
+        max_pages: int = 100,
+        extract_schema: Optional[Dict[str, str]] = None,
+        session_artifact_id: Optional[str] = None,
+        include_external_links: bool = False,
+    ) -> SiteCrawlResult:
+        """
+        Crawl a site: discover, fetch, and optionally extract in one call.
+
+        This is the high-level orchestrator that chains:
+        1. ``webgrph.crawl()`` — BFS discovery
+        2. ``evadr.fetch()`` — anti-bot fetch per page
+        3. ``kolektr.page()`` — structured extraction (if ``extract_schema``)
+
+        Per-page failures are caught and marked ``success=False`` —
+        the crawl never aborts on a single page error.
+
+        Args:
+            url: Root URL to crawl.
+            max_depth: Maximum BFS depth. Default 3.
+            max_pages: Maximum pages to crawl. Default 100.
+            extract_schema: CSS selector schema for per-page extraction.
+            session_artifact_id: AUTHENTICATED_SESSION artifact from Fetchyr.
+            include_external_links: Follow off-domain links.
+
+        Returns:
+            SiteCrawlResult with pages, fetch stats, and optional extracted data.
+
+        Example::
+
+            result = client.crawl(
+                "https://example.com",
+                max_depth=2,
+                extract_schema={"title": "css:h1", "content": "css:article"},
+            )
+            print(f"Crawled {result.total_pages_discovered} pages")
+            for page in result.pages:
+                print(f"  {page.url} — {page.status_code}")
+        """
+        crawl_result = self.webgrph.crawl(
+            url,
+            max_depth=max_depth,
+            max_pages=max_pages,
+            include_external_links=include_external_links,
+            session_artifact_id=session_artifact_id,
+        )
+
+        pages: list[CrawlPage] = []
+        fetched = 0
+        failed = 0
+
+        for node in crawl_result.pages:
+            try:
+                fetch_result = self.evadr.fetch(
+                    node.url,
+                    session_artifact_id=session_artifact_id,
+                )
+
+                structured_data: Optional[Dict[str, Any]] = None
+                if extract_schema and fetch_result.success:
+                    extraction = self.kolektr.page(
+                        node.url,
+                        schema=extract_schema,
+                        fetch_artifact_id=fetch_result.artifact_id,
+                        session_artifact_id=session_artifact_id,
+                    )
+                    if extraction.records:
+                        structured_data = extraction.records[0]
+
+                page = CrawlPage(
+                    success=fetch_result.success,
+                    url=fetch_result.url,
+                    status_code=fetch_result.status_code,
+                    tier_used=fetch_result.tier_used,
+                    html=fetch_result.html,
+                    structured_data=structured_data,
+                    artifact_id=fetch_result.artifact_id,
+                    error=fetch_result.error,
+                )
+                pages.append(page)
+                if page.ok:
+                    fetched += 1
+                else:
+                    failed += 1
+            except Exception as exc:
+                pages.append(CrawlPage(
+                    success=False,
+                    url=node.url,
+                    error=str(exc),
+                ))
+                failed += 1
+
+        return SiteCrawlResult(
+            success=True,
+            url=url,
+            total_pages_discovered=crawl_result.total_pages,
+            pages_fetched=fetched,
+            pages_failed=failed,
+            pages=pages,
+            crawl_artifact_id=crawl_result.artifact_id,
+        )
+
+    def crawl_stream(
+        self,
+        url: str,
+        max_depth: int = 3,
+        max_pages: int = 100,
+        extract_schema: Optional[Dict[str, str]] = None,
+        session_artifact_id: Optional[str] = None,
+        include_external_links: bool = False,
+    ) -> Iterator[CrawlProgressEvent]:
+        """
+        Streaming crawl: yields CrawlProgressEvent as pages are processed.
+
+        Same as ``crawl()`` but yields events in real-time instead of
+        returning a single result. Event types:
+        - ``discovery_started`` — crawl discovery started
+        - ``discovery_complete`` — all pages discovered
+        - ``page_fetching`` — started fetching a page
+        - ``page_fetched`` — page fetched successfully
+        - ``page_failed`` — page fetch failed
+        - ``crawl_complete`` — crawl finished, result in metadata
+
+        Example::
+
+            for event in client.crawl_stream("https://example.com", max_depth=2):
+                if event.type == "page_fetched":
+                    print(f"  [{event.page}/{event.total}] {event.url} OK")
+                elif event.type == "crawl_complete":
+                    print("Done!")
+        """
+        yield CrawlProgressEvent(type="discovery_started", url=url)
+
+        crawl_result = self.webgrph.crawl(
+            url,
+            max_depth=max_depth,
+            max_pages=max_pages,
+            include_external_links=include_external_links,
+            session_artifact_id=session_artifact_id,
+        )
+
+        total = crawl_result.total_pages
+        yield CrawlProgressEvent(
+            type="discovery_complete",
+            url=url,
+            total=total,
+            metadata={"pages_found": total},
+        )
+
+        pages: list[CrawlPage] = []
+        fetched = 0
+        failed = 0
+
+        for i, node in enumerate(crawl_result.pages):
+            page_num = i + 1
+            yield CrawlProgressEvent(
+                type="page_fetching",
+                url=node.url,
+                page=page_num,
+                total=total,
+            )
+
+            try:
+                fetch_result = self.evadr.fetch(
+                    node.url,
+                    session_artifact_id=session_artifact_id,
+                )
+
+                structured_data: Optional[Dict[str, Any]] = None
+                if extract_schema and fetch_result.success:
+                    extraction = self.kolektr.page(
+                        node.url,
+                        schema=extract_schema,
+                        fetch_artifact_id=fetch_result.artifact_id,
+                        session_artifact_id=session_artifact_id,
+                    )
+                    if extraction.records:
+                        structured_data = extraction.records[0]
+
+                page = CrawlPage(
+                    success=fetch_result.success,
+                    url=fetch_result.url,
+                    status_code=fetch_result.status_code,
+                    tier_used=fetch_result.tier_used,
+                    html=fetch_result.html,
+                    structured_data=structured_data,
+                    artifact_id=fetch_result.artifact_id,
+                    error=fetch_result.error,
+                )
+                pages.append(page)
+
+                if page.ok:
+                    fetched += 1
+                    yield CrawlProgressEvent(
+                        type="page_fetched",
+                        url=node.url,
+                        page=page_num,
+                        total=total,
+                        success=True,
+                        metadata={"tier_used": fetch_result.tier_used},
+                    )
+                else:
+                    failed += 1
+                    yield CrawlProgressEvent(
+                        type="page_failed",
+                        url=node.url,
+                        page=page_num,
+                        total=total,
+                        success=False,
+                        error=fetch_result.error,
+                    )
+            except Exception as exc:
+                pages.append(CrawlPage(
+                    success=False,
+                    url=node.url,
+                    error=str(exc),
+                ))
+                failed += 1
+                yield CrawlProgressEvent(
+                    type="page_failed",
+                    url=node.url,
+                    page=page_num,
+                    total=total,
+                    success=False,
+                    error=str(exc),
+                )
+
+        result = SiteCrawlResult(
+            success=True,
+            url=url,
+            total_pages_discovered=total,
+            pages_fetched=fetched,
+            pages_failed=failed,
+            pages=pages,
+            crawl_artifact_id=crawl_result.artifact_id,
+        )
+        yield CrawlProgressEvent(
+            type="crawl_complete",
+            url=url,
+            total=total,
+            success=True,
+            metadata={"result": result},
+        )
+
     def __repr__(self) -> str:
         return (
             f"Kloakd(organization_id={self._transport._organization_id!r}, "
@@ -175,6 +423,224 @@ class AsyncKloakd:
         self.parlyr = AsyncParlyrNamespace(self._transport)
         self.fetchyr = AsyncFetchyrNamespace(self._transport)
         self.kolektr = AsyncKolektrNamespace(self._transport)
+
+    async def crawl(
+        self,
+        url: str,
+        max_depth: int = 3,
+        max_pages: int = 100,
+        extract_schema: Optional[Dict[str, str]] = None,
+        session_artifact_id: Optional[str] = None,
+        include_external_links: bool = False,
+    ) -> SiteCrawlResult:
+        """
+        Async crawl: discover, fetch, and optionally extract in one call.
+
+        Async equivalent of ``Kloakd.crawl()``. See that method for full docs.
+
+        Example::
+
+            result = await client.crawl(
+                "https://example.com",
+                max_depth=2,
+                extract_schema={"title": "css:h1"},
+            )
+        """
+        crawl_result = await self.webgrph.crawl(
+            url,
+            max_depth=max_depth,
+            max_pages=max_pages,
+            include_external_links=include_external_links,
+            session_artifact_id=session_artifact_id,
+        )
+
+        pages: list[CrawlPage] = []
+        fetched = 0
+        failed = 0
+
+        for node in crawl_result.pages:
+            try:
+                fetch_result = await self.evadr.fetch(
+                    node.url,
+                    session_artifact_id=session_artifact_id,
+                )
+
+                structured_data: Optional[Dict[str, Any]] = None
+                if extract_schema and fetch_result.success:
+                    extraction = await self.kolektr.page(
+                        node.url,
+                        schema=extract_schema,
+                        fetch_artifact_id=fetch_result.artifact_id,
+                        session_artifact_id=session_artifact_id,
+                    )
+                    if extraction.records:
+                        structured_data = extraction.records[0]
+
+                page = CrawlPage(
+                    success=fetch_result.success,
+                    url=fetch_result.url,
+                    status_code=fetch_result.status_code,
+                    tier_used=fetch_result.tier_used,
+                    html=fetch_result.html,
+                    structured_data=structured_data,
+                    artifact_id=fetch_result.artifact_id,
+                    error=fetch_result.error,
+                )
+                pages.append(page)
+                if page.ok:
+                    fetched += 1
+                else:
+                    failed += 1
+            except Exception as exc:
+                pages.append(CrawlPage(
+                    success=False,
+                    url=node.url,
+                    error=str(exc),
+                ))
+                failed += 1
+
+        return SiteCrawlResult(
+            success=True,
+            url=url,
+            total_pages_discovered=crawl_result.total_pages,
+            pages_fetched=fetched,
+            pages_failed=failed,
+            pages=pages,
+            crawl_artifact_id=crawl_result.artifact_id,
+        )
+
+    async def crawl_stream(
+        self,
+        url: str,
+        max_depth: int = 3,
+        max_pages: int = 100,
+        extract_schema: Optional[Dict[str, str]] = None,
+        session_artifact_id: Optional[str] = None,
+        include_external_links: bool = False,
+    ) -> "AsyncIterator[CrawlProgressEvent]":
+        """
+        Async streaming crawl: yields CrawlProgressEvent as pages are processed.
+
+        Async equivalent of ``Kloakd.crawl_stream()``. See that method for full docs.
+
+        Example::
+
+            async for event in client.crawl_stream("https://example.com", max_depth=2):
+                if event.type == "page_fetched":
+                    print(f"  [{event.page}/{event.total}] {event.url} OK")
+        """
+        yield CrawlProgressEvent(type="discovery_started", url=url)
+
+        crawl_result = await self.webgrph.crawl(
+            url,
+            max_depth=max_depth,
+            max_pages=max_pages,
+            include_external_links=include_external_links,
+            session_artifact_id=session_artifact_id,
+        )
+
+        total = crawl_result.total_pages
+        yield CrawlProgressEvent(
+            type="discovery_complete",
+            url=url,
+            total=total,
+            metadata={"pages_found": total},
+        )
+
+        pages: list[CrawlPage] = []
+        fetched = 0
+        failed = 0
+
+        for i, node in enumerate(crawl_result.pages):
+            page_num = i + 1
+            yield CrawlProgressEvent(
+                type="page_fetching",
+                url=node.url,
+                page=page_num,
+                total=total,
+            )
+
+            try:
+                fetch_result = await self.evadr.fetch(
+                    node.url,
+                    session_artifact_id=session_artifact_id,
+                )
+
+                structured_data: Optional[Dict[str, Any]] = None
+                if extract_schema and fetch_result.success:
+                    extraction = await self.kolektr.page(
+                        node.url,
+                        schema=extract_schema,
+                        fetch_artifact_id=fetch_result.artifact_id,
+                        session_artifact_id=session_artifact_id,
+                    )
+                    if extraction.records:
+                        structured_data = extraction.records[0]
+
+                page = CrawlPage(
+                    success=fetch_result.success,
+                    url=fetch_result.url,
+                    status_code=fetch_result.status_code,
+                    tier_used=fetch_result.tier_used,
+                    html=fetch_result.html,
+                    structured_data=structured_data,
+                    artifact_id=fetch_result.artifact_id,
+                    error=fetch_result.error,
+                )
+                pages.append(page)
+
+                if page.ok:
+                    fetched += 1
+                    yield CrawlProgressEvent(
+                        type="page_fetched",
+                        url=node.url,
+                        page=page_num,
+                        total=total,
+                        success=True,
+                        metadata={"tier_used": fetch_result.tier_used},
+                    )
+                else:
+                    failed += 1
+                    yield CrawlProgressEvent(
+                        type="page_failed",
+                        url=node.url,
+                        page=page_num,
+                        total=total,
+                        success=False,
+                        error=fetch_result.error,
+                    )
+            except Exception as exc:
+                pages.append(CrawlPage(
+                    success=False,
+                    url=node.url,
+                    error=str(exc),
+                ))
+                failed += 1
+                yield CrawlProgressEvent(
+                    type="page_failed",
+                    url=node.url,
+                    page=page_num,
+                    total=total,
+                    success=False,
+                    error=str(exc),
+                )
+
+        result = SiteCrawlResult(
+            success=True,
+            url=url,
+            total_pages_discovered=total,
+            pages_fetched=fetched,
+            pages_failed=failed,
+            pages=pages,
+            crawl_artifact_id=crawl_result.artifact_id,
+        )
+        yield CrawlProgressEvent(
+            type="crawl_complete",
+            url=url,
+            total=total,
+            success=True,
+            metadata={"result": result},
+        )
 
     def __repr__(self) -> str:
         return (
