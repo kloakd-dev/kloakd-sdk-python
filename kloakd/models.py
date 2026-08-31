@@ -86,6 +86,7 @@ class CrawlResult:
     artifact_id: Optional[str] = None
     has_more: bool = False
     total: int = 0
+    next_cursor: Optional[str] = None
     error: Optional[str] = None
 
     @property
@@ -101,6 +102,8 @@ class CrawlEvent:
     url: Optional[str] = None
     depth: Optional[int] = None
     pages_found: Optional[int] = None
+    total_pages: Optional[int] = None
+    artifact_id: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 

@@ -19,6 +19,7 @@ Usage::
 from __future__ import annotations
 
 import json as _json
+import time
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, List, Optional
 
@@ -26,6 +27,9 @@ from kloakd.models import CrawlEvent, CrawlResult, PageNode
 
 if TYPE_CHECKING:
     from kloakd._http import _AsyncHttpTransport, _HttpTransport
+
+_DEFAULT_POLL_TIMEOUT = 300.0
+_DEFAULT_POLL_INTERVAL = 2.0
 
 
 def _parse_crawl(raw: Dict[str, Any], url: str, limit: int) -> CrawlResult:
@@ -55,6 +59,42 @@ def _parse_crawl(raw: Dict[str, Any], url: str, limit: int) -> CrawlResult:
     )
 
 
+def _poll_crawl_status_sync(
+    transport: "_HttpTransport",
+    crawl_id: str,
+    timeout: float,
+    interval: float,
+) -> Optional[Dict[str, Any]]:
+    """Poll crawl status until terminal state or timeout (sync)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        status = transport.get(f"webgrph/crawl/{crawl_id}")
+        state = status.get("status", "pending")
+        if state in ("completed", "failed", "cancelled"):
+            return status
+        time.sleep(interval)
+    return None
+
+
+async def _poll_crawl_status_async(
+    transport: "_AsyncHttpTransport",
+    crawl_id: str,
+    timeout: float,
+    interval: float,
+) -> Optional[Dict[str, Any]]:
+    """Poll crawl status until terminal state or timeout (async)."""
+    import asyncio
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        status = await transport.get(f"webgrph/crawl/{crawl_id}")
+        state = status.get("status", "pending")
+        if state in ("completed", "failed", "cancelled"):
+            return status
+        await asyncio.sleep(interval)
+    return None
+
+
 class WebgrphNamespace:
     """Synchronous Webgrph operations. Access via ``client.webgrph``."""
 
@@ -70,9 +110,16 @@ class WebgrphNamespace:
         session_artifact_id: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
+        poll_timeout: float = _DEFAULT_POLL_TIMEOUT,
+        poll_interval: float = _DEFAULT_POLL_INTERVAL,
     ) -> CrawlResult:
         """
         Crawl a site and produce a SITE_HIERARCHY artifact.
+
+        The backend returns 202 immediately with a ``crawl_id`` and runs the
+        crawl asynchronously in a Celery worker. This method polls
+        ``get_crawl_status()`` until the crawl completes (or fails), then
+        fetches the discovered pages via ``get_crawl_pages()``.
 
         Args:
             url: Seed URL.
@@ -82,6 +129,8 @@ class WebgrphNamespace:
             session_artifact_id: AUTHENTICATED_SESSION artifact from Fetchyr.
             limit: Max pages in this response (pagination). Default 100.
             offset: Pagination offset. Default 0.
+            poll_timeout: Max seconds to wait for crawl completion. Default 300.
+            poll_interval: Seconds between status polls. Default 2.
 
         Returns:
             CrawlResult with pages list and artifact_id.
@@ -98,7 +147,57 @@ class WebgrphNamespace:
             body["session_artifact_id"] = session_artifact_id
 
         raw = self._t.post("webgrph/crawl", body)
-        return _parse_crawl(raw, url, limit)
+        crawl_id = raw.get("crawl_id", "")
+        if not crawl_id:
+            return _parse_crawl(raw, url, limit)
+
+        final_status = _poll_crawl_status_sync(
+            self._t, crawl_id, poll_timeout, poll_interval
+        )
+        if final_status is None:
+            return CrawlResult(
+                success=False,
+                crawl_id=crawl_id,
+                url=url,
+                total_pages=0,
+                max_depth_reached=0,
+                error=f"Crawl timed out after {poll_timeout}s",
+            )
+
+        if final_status.get("status") == "failed":
+            return CrawlResult(
+                success=False,
+                crawl_id=crawl_id,
+                url=url,
+                total_pages=0,
+                max_depth_reached=0,
+                error=final_status.get("error", "Crawl failed"),
+            )
+
+        pages_raw = self._t.get(f"webgrph/crawl/{crawl_id}/pages")
+        pages = [
+            PageNode(
+                url=p.get("url", ""),
+                depth=p.get("depth", 0),
+                title=(p.get("metadata") or {}).get("title") or p.get("title"),
+                status_code=p.get("status_code"),
+                children=p.get("children_urls", p.get("children", [])),
+            )
+            for p in pages_raw.get("nodes", [])
+        ]
+        return CrawlResult(
+            success=True,
+            crawl_id=crawl_id,
+            url=url,
+            total_pages=pages_raw.get("total", len(pages)),
+            max_depth_reached=final_status.get("max_depth_reached", 0),
+            pages=pages,
+            artifact_id=final_status.get("artifact_id"),
+            has_more=pages_raw.get("next_cursor") is not None,
+            total=pages_raw.get("total", len(pages)),
+            next_cursor=pages_raw.get("next_cursor"),
+            error=None,
+        )
 
     def crawl_all(
         self,
@@ -107,6 +206,8 @@ class WebgrphNamespace:
         max_pages: int = 1000,
         include_external_links: bool = False,
         session_artifact_id: Optional[str] = None,
+        poll_timeout: float = _DEFAULT_POLL_TIMEOUT,
+        poll_interval: float = _DEFAULT_POLL_INTERVAL,
     ) -> List[PageNode]:
         """
         Auto-paginate crawl results, returning all discovered pages.
@@ -115,21 +216,38 @@ class WebgrphNamespace:
             Complete list of PageNode objects.
         """
         all_pages: List[PageNode] = []
-        offset = 0
-        while True:
-            result = self.crawl(
-                url,
-                max_depth=max_depth,
-                max_pages=max_pages,
-                include_external_links=include_external_links,
-                session_artifact_id=session_artifact_id,
-                limit=100,
-                offset=offset,
+        result = self.crawl(
+            url,
+            max_depth=max_depth,
+            max_pages=max_pages,
+            include_external_links=include_external_links,
+            session_artifact_id=session_artifact_id,
+            limit=100,
+            offset=0,
+            poll_timeout=poll_timeout,
+            poll_interval=poll_interval,
+        )
+        all_pages.extend(result.pages)
+        cursor = result.next_cursor
+        while result.has_more and cursor:
+            pages_raw = self._t.get(
+                f"webgrph/crawl/{result.crawl_id}/pages",
+                params={"cursor": cursor} if cursor else None,
             )
-            all_pages.extend(result.pages)
-            if not result.has_more:
+            new_pages = [
+                PageNode(
+                    url=p.get("url", ""),
+                    depth=p.get("depth", 0),
+                    title=(p.get("metadata") or {}).get("title") or p.get("title"),
+                    status_code=p.get("status_code"),
+                    children=p.get("children_urls", p.get("children", [])),
+                )
+                for p in pages_raw.get("nodes", [])
+            ]
+            all_pages.extend(new_pages)
+            cursor = pages_raw.get("next_cursor")
+            if not cursor:
                 break
-            offset += len(result.pages)
         return all_pages
 
     def get_crawl_status(self, crawl_id: str) -> Dict[str, Any]:
@@ -198,6 +316,8 @@ class AsyncWebgrphNamespace:
         session_artifact_id: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
+        poll_timeout: float = _DEFAULT_POLL_TIMEOUT,
+        poll_interval: float = _DEFAULT_POLL_INTERVAL,
     ) -> CrawlResult:
         """Async equivalent of WebgrphNamespace.crawl."""
         body: Dict[str, Any] = {
@@ -212,7 +332,57 @@ class AsyncWebgrphNamespace:
             body["session_artifact_id"] = session_artifact_id
 
         raw = await self._t.post("webgrph/crawl", body)
-        return _parse_crawl(raw, url, limit)
+        crawl_id = raw.get("crawl_id", "")
+        if not crawl_id:
+            return _parse_crawl(raw, url, limit)
+
+        final_status = await _poll_crawl_status_async(
+            self._t, crawl_id, poll_timeout, poll_interval
+        )
+        if final_status is None:
+            return CrawlResult(
+                success=False,
+                crawl_id=crawl_id,
+                url=url,
+                total_pages=0,
+                max_depth_reached=0,
+                error=f"Crawl timed out after {poll_timeout}s",
+            )
+
+        if final_status.get("status") == "failed":
+            return CrawlResult(
+                success=False,
+                crawl_id=crawl_id,
+                url=url,
+                total_pages=0,
+                max_depth_reached=0,
+                error=final_status.get("error", "Crawl failed"),
+            )
+
+        pages_raw = await self._t.get(f"webgrph/crawl/{crawl_id}/pages")
+        pages = [
+            PageNode(
+                url=p.get("url", ""),
+                depth=p.get("depth", 0),
+                title=(p.get("metadata") or {}).get("title") or p.get("title"),
+                status_code=p.get("status_code"),
+                children=p.get("children_urls", p.get("children", [])),
+            )
+            for p in pages_raw.get("nodes", [])
+        ]
+        return CrawlResult(
+            success=True,
+            crawl_id=crawl_id,
+            url=url,
+            total_pages=pages_raw.get("total", len(pages)),
+            max_depth_reached=final_status.get("max_depth_reached", 0),
+            pages=pages,
+            artifact_id=final_status.get("artifact_id"),
+            has_more=pages_raw.get("next_cursor") is not None,
+            total=pages_raw.get("total", len(pages)),
+            next_cursor=pages_raw.get("next_cursor"),
+            error=None,
+        )
 
     @asynccontextmanager
     async def crawl_stream(
@@ -220,9 +390,17 @@ class AsyncWebgrphNamespace:
         url: str,
         max_depth: int = 3,
         max_pages: int = 100,
+        include_external_links: bool = False,
+        session_artifact_id: Optional[str] = None,
     ) -> AsyncIterator[AsyncIterator[CrawlEvent]]:
         """
         Async SSE event stream for a site crawl.
+
+        Starts the crawl via POST /webgrph/crawl, then subscribes to
+        GET /webgrph/crawl/{crawl_id}/events for real-time pipeline events.
+
+        The SSE stream uses the ``?token=`` query parameter for auth because
+        ``EventSource`` cannot send custom HTTP headers.
 
         Usage::
 
@@ -235,39 +413,63 @@ class AsyncWebgrphNamespace:
         except ImportError as exc:
             raise RuntimeError("httpx is required for crawl_stream") from exc
 
-        url_path = self._t._url("webgrph/crawl/stream")
-        headers = self._t._auth_headers()
-        headers["Accept"] = "text/event-stream"
+        body: Dict[str, Any] = {
+            "url": url,
+            "max_depth": max_depth,
+            "max_pages": max_pages,
+            "include_external_links": include_external_links,
+        }
+        if session_artifact_id:
+            body["session_artifact_id"] = session_artifact_id
+
+        raw = await self._t.post("webgrph/crawl", body)
+        crawl_id = raw.get("crawl_id", "")
+        if not crawl_id:
+            raise RuntimeError("Crawl start failed: no crawl_id returned")
+
+        sse_url = self._t._url(f"webgrph/crawl/{crawl_id}/events")
+        sse_url = f"{sse_url}?token={self._t._api_key}"
 
         async with httpx.AsyncClient(timeout=None) as http:
             async with http.stream(
-                "POST",
-                url_path,
-                json={"url": url, "max_depth": max_depth, "max_pages": max_pages},
-                headers=headers,
+                "GET",
+                sse_url,
+                headers={"Accept": "text/event-stream"},
             ) as response:
                 from kloakd._http import _HttpTransport
                 _HttpTransport._raise_for_status(response.status_code, b"")
 
                 async def _event_iter() -> AsyncIterator[CrawlEvent]:
+                    event_type = ""
+                    data_lines: list[str] = []
                     async for line in response.aiter_lines():
-                        line = line.strip()
-                        if not line.startswith("data:"):
+                        line = line.rstrip("\n\r")
+                        if not line:
+                            if data_lines:
+                                data_str = "\n".join(data_lines)
+                                try:
+                                    data = _json.loads(data_str)
+                                    yield CrawlEvent(
+                                        type=data.get("event_type", event_type or ""),
+                                        url=data.get("url"),
+                                        depth=data.get("depth"),
+                                        pages_found=data.get("total_pages")
+                                        or data.get("pages_found"),
+                                        total_pages=data.get("total_pages"),
+                                        artifact_id=data.get("artifact_id"),
+                                        metadata=data.get("metadata", {}),
+                                    )
+                                except _json.JSONDecodeError:
+                                    pass
+                                event_type = ""
+                                data_lines = []
                             continue
-                        data_str = line[5:].strip()
-                        if not data_str:
-                            continue
-                        try:
-                            data = _json.loads(data_str)
-                            yield CrawlEvent(
-                                type=data.get("type", ""),
-                                url=data.get("url"),
-                                depth=data.get("depth"),
-                                pages_found=data.get("pages_found"),
-                                metadata=data.get("metadata", {}),
-                            )
-                        except _json.JSONDecodeError:
-                            continue
+                        if line.startswith("event:"):
+                            event_type = line[6:].strip()
+                        elif line.startswith("data:"):
+                            data_lines.append(line[5:].strip())
+                        elif line.startswith("id:"):
+                            pass
 
                 yield _event_iter()
 

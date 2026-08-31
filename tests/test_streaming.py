@@ -23,7 +23,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from kloakd import AsyncKloakd, Kloakd
-from tests.conftest import TEST_BASE_URL, TEST_ORG_ID
+from tests.conftest import TEST_BASE_URL, TEST_ORG_ID, mock_response
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -105,6 +105,42 @@ def _make_sync_http_client(response: _MockStreamResponse) -> MagicMock:
     mock_client.__enter__ = MagicMock(return_value=mock_client)
     mock_client.__exit__ = MagicMock(return_value=False)
     return mock_client
+
+
+class _MockAsyncClientForCrawlStream:
+    """Mock httpx.AsyncClient that handles both .request() for POST and .stream() for SSE.
+
+    crawl_stream() first POSTs via the async transport (which creates an
+    httpx.AsyncClient and calls .request()), then creates another
+    httpx.AsyncClient for the SSE stream (calling .stream()).
+    This mock handles both calls.
+    """
+
+    def __init__(self, post_response_lines: List[str], sse_lines: List[str]) -> None:
+        self._post_response = mock_response({
+            "success": True,
+            "crawl_id": "c-stream-001",
+            "url": "https://example.com",
+            "total_pages": 0,
+            "max_depth_reached": 0,
+            "artifact_id": None,
+            "error": None,
+        }, status_code=202)
+        self._sse_response = _MockAsyncStreamResponse(sse_lines)
+        self.request_calls: list = []
+
+    async def request(self, method, url, **kwargs):
+        self.request_calls.append({"method": method, "url": url, **kwargs})
+        return self._post_response
+
+    def stream(self, method, url, **kwargs):
+        return self._sse_response
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
 
 
 @pytest.fixture
@@ -190,13 +226,12 @@ async def test_evadr_fetch_stream_skips_malformed_json(async_client: AsyncKloakd
 
 @pytest.mark.asyncio
 async def test_webgrph_crawl_stream_yields_events(async_client: AsyncKloakd) -> None:
-    lines = _sse_lines(
-        {"type": "page_found", "url": "https://example.com", "depth": 0, "pages_found": 1, "metadata": {}},
-        {"type": "page_found", "url": "https://example.com/about", "depth": 1, "pages_found": 2, "metadata": {}},
-        {"type": "done", "url": None, "depth": None, "pages_found": 2, "metadata": {}},
+    lines = _sse_event_lines(
+        ("pipeline_step", {"event_type": "pipeline_step", "url": "https://example.com", "depth": 0, "total_pages": 1, "metadata": {}}),
+        ("pipeline_step", {"event_type": "pipeline_step", "url": "https://example.com/about", "depth": 1, "total_pages": 2, "metadata": {}}),
+        ("pipeline_complete", {"event_type": "pipeline_complete", "url": None, "depth": None, "total_pages": 2, "metadata": {}}),
     )
-    mock_response = _MockAsyncStreamResponse(lines)
-    mock_client = _make_async_http_client(mock_response)
+    mock_client = _MockAsyncClientForCrawlStream([], lines)
 
     with patch("httpx.AsyncClient", return_value=mock_client):
         collected = []
@@ -205,21 +240,20 @@ async def test_webgrph_crawl_stream_yields_events(async_client: AsyncKloakd) -> 
                 collected.append(event)
 
     assert len(collected) == 3
-    assert collected[0].type == "page_found"
+    assert collected[0].type == "pipeline_step"
     assert collected[0].url == "https://example.com"
     assert collected[0].depth == 0
     assert collected[0].pages_found == 1
     assert collected[1].url == "https://example.com/about"
-    assert collected[2].type == "done"
+    assert collected[2].type == "pipeline_complete"
 
 
 @pytest.mark.asyncio
 async def test_webgrph_crawl_stream_with_params(async_client: AsyncKloakd) -> None:
-    lines = _sse_lines(
-        {"type": "page_found", "url": "https://ex.com", "depth": 0, "pages_found": 1, "metadata": {}},
+    lines = _sse_event_lines(
+        ("pipeline_step", {"event_type": "pipeline_step", "url": "https://ex.com", "depth": 0, "total_pages": 1, "metadata": {}}),
     )
-    mock_response = _MockAsyncStreamResponse(lines)
-    mock_client = _make_async_http_client(mock_response)
+    mock_client = _MockAsyncClientForCrawlStream([], lines)
 
     with patch("httpx.AsyncClient", return_value=mock_client):
         collected = []
@@ -230,20 +264,24 @@ async def test_webgrph_crawl_stream_with_params(async_client: AsyncKloakd) -> No
                 collected.append(event)
 
     assert len(collected) == 1
-    # Verify stream method was called with correct payload
-    call_kwargs = mock_client.stream.call_args
-    assert call_kwargs[1]["json"]["max_depth"] == 5
-    assert call_kwargs[1]["json"]["max_pages"] == 200
+    # Verify POST request was called with correct payload
+    post_call = mock_client.request_calls[0]
+    assert post_call["method"] == "POST"
+    assert post_call["json"]["max_depth"] == 5
+    assert post_call["json"]["max_pages"] == 200
 
 
 @pytest.mark.asyncio
 async def test_webgrph_crawl_stream_skips_malformed_json(async_client: AsyncKloakd) -> None:
     lines = [
+        "event: pipeline_step",
         "data: BROKEN",
-        'data: {"type": "page_found", "url": "https://x.com", "depth": 0, "pages_found": 1, "metadata": {}}',
+        "",
+        "event: pipeline_step",
+        'data: {"event_type": "pipeline_step", "url": "https://x.com", "depth": 0, "total_pages": 1, "metadata": {}}',
+        "",
     ]
-    mock_response = _MockAsyncStreamResponse(lines)
-    mock_client = _make_async_http_client(mock_response)
+    mock_client = _MockAsyncClientForCrawlStream([], lines)
 
     with patch("httpx.AsyncClient", return_value=mock_client):
         collected = []

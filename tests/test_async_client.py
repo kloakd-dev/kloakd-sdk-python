@@ -13,6 +13,7 @@ from kloakd import (
     NexusAnalyzeResult,
     ParseResult,
     SessionResult,
+    SiteCrawlResult,
 )
 from tests.conftest import TEST_BASE_URL, TEST_ORG_ID, ORG_PREFIX, mock_response
 
@@ -95,16 +96,35 @@ async def test_async_webgrph_crawl(async_client: AsyncKloakd) -> None:
             "success": True,
             "crawl_id": "c-async-001",
             "url": "https://example.com",
+            "total_pages": 0,
+            "max_depth_reached": 0,
+            "artifact_id": None,
+            "error": None,
+        }, status_code=202)
+    )
+    respx.get(f"{TEST_BASE_URL}{ORG_PREFIX}/webgrph/crawl/c-async-001").mock(
+        return_value=mock_response({
+            "crawl_id": "c-async-001",
+            "status": "completed",
+            "organization_id": TEST_ORG_ID,
             "total_pages": 1,
             "max_depth_reached": 0,
-            "pages": [{"url": "https://example.com", "depth": 0, "title": "Home", "status_code": 200, "children": []}],
             "artifact_id": "art-hier-async",
-            "has_more": False,
-            "total": 1,
             "error": None,
+            "graph_data": None,
         })
     )
-    result = await async_client.webgrph.crawl("https://example.com")
+    respx.get(f"{TEST_BASE_URL}{ORG_PREFIX}/webgrph/crawl/c-async-001/pages").mock(
+        return_value=mock_response({
+            "crawl_id": "c-async-001",
+            "nodes": [
+                {"id": "n1", "url": "https://example.com", "depth": 0, "category": "page", "children_urls": [], "classification_confidence": 0.0, "metadata": {"title": "Home"}},
+            ],
+            "next_cursor": None,
+            "total": 1,
+        })
+    )
+    result = await async_client.webgrph.crawl("https://example.com", poll_interval=0.01)
     assert result.crawl_id == "c-async-001"
     assert result.ok is True
 
@@ -248,3 +268,93 @@ async def test_async_kolektr_extract_html(async_client: AsyncKloakd) -> None:
     )
     assert result.ok is True
     assert result.records[0]["price"] == "$5.00"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_async_orchestrator_crawl(async_client: AsyncKloakd) -> None:
+    respx.post(f"{TEST_BASE_URL}{ORG_PREFIX}/webgrph/crawl").mock(
+        return_value=mock_response({
+            "success": True, "crawl_id": "c-orch", "url": "https://example.com",
+            "total_pages": 0, "max_depth_reached": 0, "artifact_id": None, "error": None,
+        }, status_code=202)
+    )
+    respx.get(f"{TEST_BASE_URL}{ORG_PREFIX}/webgrph/crawl/c-orch").mock(
+        return_value=mock_response({
+            "crawl_id": "c-orch", "status": "completed", "organization_id": TEST_ORG_ID,
+            "total_pages": 1, "max_depth_reached": 0, "artifact_id": "art-orch",
+            "error": None, "graph_data": None,
+        })
+    )
+    respx.get(f"{TEST_BASE_URL}{ORG_PREFIX}/webgrph/crawl/c-orch/pages").mock(
+        return_value=mock_response({
+            "crawl_id": "c-orch",
+            "nodes": [
+                {"id": "n1", "url": "https://example.com", "depth": 0, "category": "page", "children_urls": [], "classification_confidence": 0.0, "metadata": {"title": "Home"}},
+            ],
+            "next_cursor": None, "total": 1,
+        })
+    )
+    respx.post(f"{TEST_BASE_URL}{ORG_PREFIX}/evadr/fetch").mock(
+        return_value=mock_response({
+            "success": True, "url": "https://example.com", "status_code": 200,
+            "tier_used": 1, "html": "<html>content</html>", "vendor_detected": None,
+            "anti_bot_bypassed": False, "artifact_id": "art-fetch", "error": None,
+        })
+    )
+    result = await async_client.crawl("https://example.com", max_depth=1, poll_interval=0.01)
+    assert isinstance(result, SiteCrawlResult)
+    assert result.success is True
+    assert result.total_pages_discovered == 1
+    assert result.pages_fetched == 1
+    assert len(result.pages) == 1
+    assert result.pages[0].url == "https://example.com"
+    assert result.pages[0].html == "<html>content</html>"
+    assert result.crawl_artifact_id == "art-orch"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_async_orchestrator_crawl_stream(async_client: AsyncKloakd) -> None:
+    respx.post(f"{TEST_BASE_URL}{ORG_PREFIX}/webgrph/crawl").mock(
+        return_value=mock_response({
+            "success": True, "crawl_id": "c-stream-async", "url": "https://example.com",
+            "total_pages": 0, "max_depth_reached": 0, "artifact_id": None, "error": None,
+        }, status_code=202)
+    )
+    respx.get(f"{TEST_BASE_URL}{ORG_PREFIX}/webgrph/crawl/c-stream-async").mock(
+        return_value=mock_response({
+            "crawl_id": "c-stream-async", "status": "completed", "organization_id": TEST_ORG_ID,
+            "total_pages": 1, "max_depth_reached": 0, "artifact_id": "art-stream-async",
+            "error": None, "graph_data": None,
+        })
+    )
+    respx.get(f"{TEST_BASE_URL}{ORG_PREFIX}/webgrph/crawl/c-stream-async/pages").mock(
+        return_value=mock_response({
+            "crawl_id": "c-stream-async",
+            "nodes": [
+                {"id": "n1", "url": "https://example.com", "depth": 0, "category": "page", "children_urls": [], "classification_confidence": 0.0, "metadata": {"title": "Home"}},
+            ],
+            "next_cursor": None, "total": 1,
+        })
+    )
+    respx.post(f"{TEST_BASE_URL}{ORG_PREFIX}/evadr/fetch").mock(
+        return_value=mock_response({
+            "success": True, "url": "https://example.com", "status_code": 200,
+            "tier_used": 1, "html": "<html>async-stream</html>", "vendor_detected": None,
+            "anti_bot_bypassed": False, "artifact_id": "art-fetch", "error": None,
+        })
+    )
+    events = []
+    async for event in async_client.crawl_stream("https://example.com", max_depth=1, poll_interval=0.01):
+        events.append(event)
+    types = [e.type for e in events]
+    assert "discovery_started" in types
+    assert "discovery_complete" in types
+    assert "page_fetching" in types
+    assert "page_fetched" in types
+    assert "crawl_complete" in types
+    final_event = events[-1]
+    assert final_event.type == "crawl_complete"
+    result = final_event.metadata["result"]
+    assert result.pages_fetched == 1

@@ -109,12 +109,14 @@ class Kloakd:
         extract_schema: Optional[Dict[str, str]] = None,
         session_artifact_id: Optional[str] = None,
         include_external_links: bool = False,
+        poll_timeout: float = 300.0,
+        poll_interval: float = 2.0,
     ) -> SiteCrawlResult:
         """
         Crawl a site: discover, fetch, and optionally extract in one call.
 
         This is the high-level orchestrator that chains:
-        1. ``webgrph.crawl()`` — BFS discovery
+        1. ``webgrph.crawl()`` — BFS discovery (polls until crawl completes)
         2. ``evadr.fetch()`` — anti-bot fetch per page
         3. ``kolektr.page()`` — structured extraction (if ``extract_schema``)
 
@@ -128,6 +130,8 @@ class Kloakd:
             extract_schema: CSS selector schema for per-page extraction.
             session_artifact_id: AUTHENTICATED_SESSION artifact from Fetchyr.
             include_external_links: Follow off-domain links.
+            poll_timeout: Max seconds to wait for crawl discovery. Default 300.
+            poll_interval: Seconds between status polls. Default 2.
 
         Returns:
             SiteCrawlResult with pages, fetch stats, and optional extracted data.
@@ -149,6 +153,8 @@ class Kloakd:
             max_pages=max_pages,
             include_external_links=include_external_links,
             session_artifact_id=session_artifact_id,
+            poll_timeout=poll_timeout,
+            poll_interval=poll_interval,
         )
 
         pages: list[CrawlPage] = []
@@ -214,6 +220,8 @@ class Kloakd:
         extract_schema: Optional[Dict[str, str]] = None,
         session_artifact_id: Optional[str] = None,
         include_external_links: bool = False,
+        poll_timeout: float = 300.0,
+        poll_interval: float = 2.0,
     ) -> Iterator[CrawlProgressEvent]:
         """
         Streaming crawl: yields CrawlProgressEvent as pages are processed.
@@ -243,6 +251,8 @@ class Kloakd:
             max_pages=max_pages,
             include_external_links=include_external_links,
             session_artifact_id=session_artifact_id,
+            poll_timeout=poll_timeout,
+            poll_interval=poll_interval,
         )
 
         total = crawl_result.total_pages
@@ -432,6 +442,8 @@ class AsyncKloakd:
         extract_schema: Optional[Dict[str, str]] = None,
         session_artifact_id: Optional[str] = None,
         include_external_links: bool = False,
+        poll_timeout: float = 300.0,
+        poll_interval: float = 2.0,
     ) -> SiteCrawlResult:
         """
         Async crawl: discover, fetch, and optionally extract in one call.
@@ -452,6 +464,8 @@ class AsyncKloakd:
             max_pages=max_pages,
             include_external_links=include_external_links,
             session_artifact_id=session_artifact_id,
+            poll_timeout=poll_timeout,
+            poll_interval=poll_interval,
         )
 
         pages: list[CrawlPage] = []
@@ -517,6 +531,8 @@ class AsyncKloakd:
         extract_schema: Optional[Dict[str, str]] = None,
         session_artifact_id: Optional[str] = None,
         include_external_links: bool = False,
+        poll_timeout: float = 300.0,
+        poll_interval: float = 2.0,
     ) -> "AsyncIterator[CrawlProgressEvent]":
         """
         Async streaming crawl: yields CrawlProgressEvent as pages are processed.
@@ -537,6 +553,8 @@ class AsyncKloakd:
             max_pages=max_pages,
             include_external_links=include_external_links,
             session_artifact_id=session_artifact_id,
+            poll_timeout=poll_timeout,
+            poll_interval=poll_interval,
         )
 
         total = crawl_result.total_pages

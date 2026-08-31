@@ -32,7 +32,7 @@ from kloakd.errors import (
 logger = logging.getLogger("kloakd.http")
 
 _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
-_SDK_VERSION = "0.1.0"
+_SDK_VERSION = "0.2.0"
 
 
 def _sdk_header(language: str = "python") -> str:
