@@ -457,6 +457,9 @@ class AsyncWebgrphNamespace:
                                         or data.get("pages_found"),
                                         total_pages=data.get("total_pages"),
                                         artifact_id=data.get("artifact_id"),
+                                        stage_id=data.get("stage_id"),
+                                        sub_status=data.get("sub_status"),
+                                        progress_pct=data.get("progress_pct"),
                                         metadata=data.get("metadata", {}),
                                     )
                                 except _json.JSONDecodeError:

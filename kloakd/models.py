@@ -104,6 +104,9 @@ class CrawlEvent:
     pages_found: Optional[int] = None
     total_pages: Optional[int] = None
     artifact_id: Optional[str] = None
+    stage_id: Optional[str] = None
+    sub_status: Optional[str] = None
+    progress_pct: Optional[float] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
