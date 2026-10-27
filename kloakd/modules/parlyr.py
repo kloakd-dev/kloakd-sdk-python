@@ -17,9 +17,8 @@ Usage::
 
 from __future__ import annotations
 
-import json as _json
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, Optional
+from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, Iterator, Optional
 
 from kloakd.models import ChatEvent, ChatTurn, ParseResult
 
@@ -79,44 +78,13 @@ class ParlyrNamespace:
         Returns:
             ChatTurn with intent, response text, and entities.
         """
-        try:
-            import httpx
-        except ImportError as exc:
-            raise RuntimeError("httpx is required: pip install kloakd-sdk") from exc
-
-        url = self._t._url("parlyr/chat")
-        headers = self._t._auth_headers()
-        headers["Accept"] = "text/event-stream"
-
         intent_data: Dict[str, Any] = {}
         response_text = ""
-
-        with httpx.Client(timeout=self._t._timeout) as http:
-            with http.stream(
-                "POST",
-                url,
-                json={"session_id": session_id, "message": message},
-                headers=headers,
-            ) as resp:
-                from kloakd._http import _HttpTransport
-                _HttpTransport._raise_for_status(resp.status_code, b"")
-                current_event = ""
-                for line in resp.iter_lines():
-                    line = line.strip()
-                    if line.startswith("event:"):
-                        current_event = line[6:].strip()
-                    elif line.startswith("data:"):
-                        data_str = line[5:].strip()
-                        if not data_str:
-                            continue
-                        try:
-                            data = _json.loads(data_str)
-                        except _json.JSONDecodeError:
-                            continue
-                        if current_event == "intent":
-                            intent_data = data
-                        elif current_event == "response":
-                            response_text = data.get("content", "")
+        for event, data in self._t.iter_sse("POST", "parlyr/chat", {"session_id": session_id, "message": message}):
+            if event == "intent":
+                intent_data = data
+            elif event == "response":
+                response_text = data.get("content", "")
 
         return ChatTurn(
             session_id=session_id,
@@ -128,6 +96,11 @@ class ParlyrNamespace:
             requires_action=intent_data.get("requires_action", False),
             clarification_needed=intent_data.get("clarification_needed"),
         )
+
+    def chat_stream(self, session_id: str, message: str) -> Iterator[ChatEvent]:
+        """Yield the SSE events of one chat turn as they arrive."""
+        for event, data in self._t.iter_sse("POST", "parlyr/chat", {"session_id": session_id, "message": message}):
+            yield ChatEvent(event=event, data=data)
 
     def delete_session(self, session_id: str) -> None:
         """
@@ -182,42 +155,31 @@ class AsyncParlyrNamespace:
                 async for event in events:
                     print(event.event, event.data)
         """
-        try:
-            import httpx
-        except ImportError as exc:
-            raise RuntimeError("httpx is required for chat_stream") from exc
+        async def _event_iter() -> AsyncIterator[ChatEvent]:
+            async for event, data in self._t.aiter_sse("POST", "parlyr/chat", {"session_id": session_id, "message": message}):
+                yield ChatEvent(event=event, data=data)
 
-        url = self._t._url("parlyr/chat")
-        headers = self._t._auth_headers()
-        headers["Accept"] = "text/event-stream"
+        yield _event_iter()
 
-        async with httpx.AsyncClient(timeout=None) as http:
-            async with http.stream(
-                "POST",
-                url,
-                json={"session_id": session_id, "message": message},
-                headers=headers,
-            ) as response:
-                from kloakd._http import _HttpTransport
-                _HttpTransport._raise_for_status(response.status_code, b"")
-
-                async def _event_iter() -> AsyncIterator[ChatEvent]:
-                    current_event = ""
-                    async for line in response.aiter_lines():
-                        line = line.strip()
-                        if line.startswith("event:"):
-                            current_event = line[6:].strip()
-                        elif line.startswith("data:"):
-                            data_str = line[5:].strip()
-                            if not data_str:
-                                continue
-                            try:
-                                data = _json.loads(data_str)
-                            except _json.JSONDecodeError:
-                                continue
-                            yield ChatEvent(event=current_event, data=data)
-
-                yield _event_iter()
+    async def chat(self, session_id: str, message: str) -> ChatTurn:
+        """Async equivalent of ParlyrNamespace.chat."""
+        intent_data: Dict[str, Any] = {}
+        response_text = ""
+        async for event, data in self._t.aiter_sse("POST", "parlyr/chat", {"session_id": session_id, "message": message}):
+            if event == "intent":
+                intent_data = data
+            elif event == "response":
+                response_text = data.get("content", "")
+        return ChatTurn(
+            session_id=session_id,
+            intent=intent_data.get("intent", "unknown"),
+            confidence=intent_data.get("confidence", 0.0),
+            tier=intent_data.get("tier", 0),
+            response=response_text,
+            entities=intent_data.get("entities", {}),
+            requires_action=intent_data.get("requires_action", False),
+            clarification_needed=intent_data.get("clarification_needed"),
+        )
 
     async def delete_session(self, session_id: str) -> None:
         """Async equivalent of ParlyrNamespace.delete_session."""

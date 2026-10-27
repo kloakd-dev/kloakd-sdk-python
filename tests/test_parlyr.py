@@ -7,7 +7,7 @@ import respx
 from httpx import Response
 
 from kloakd import Kloakd, ParseResult
-from tests.conftest import TEST_BASE_URL, TEST_ORG_ID, ORG_PREFIX, mock_response
+from tests.conftest import ORG_PREFIX, TEST_BASE_URL, TEST_ORG_ID, mock_response
 
 
 @pytest.fixture

@@ -1,98 +1,130 @@
 """
 KLOAKD SDK — Webgrph module namespace.
 
-Webgrph builds a complete SITE_HIERARCHY artifact via BFS crawl. The artifact
-can be seeded into Skanyr for API discovery or inspected directly.
+Webgrph maps a site: a breadth-first crawl that builds its page hierarchy.
+The API answers a crawl request with 202 and crawls in the background;
+``crawl`` waits for it and loads every page node.
 
 Usage::
 
     crawl = client.webgrph.crawl("https://example.com", max_depth=3)
-    print(f"Found {crawl.total_pages} pages")
-
-    # Seed into Skanyr
-    apis = client.skanyr.discover(
-        "https://example.com",
-        site_hierarchy_artifact_id=crawl.artifact_id,
-    )
+    print(crawl.status, crawl.total_pages)
+    site = client.skanyr.site_from_crawl(crawl.crawl_id)
 """
 
 from __future__ import annotations
 
-import json as _json
+import asyncio
 import time
-from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, Iterator, List, Optional
 
 from kloakd.models import CrawlEvent, CrawlResult, PageNode
+from kloakd.modules._ops import Op, _Op, arun, as_list, compact, run
 
 if TYPE_CHECKING:
     from kloakd._http import _AsyncHttpTransport, _HttpTransport
 
-_DEFAULT_POLL_TIMEOUT = 300.0
-_DEFAULT_POLL_INTERVAL = 2.0
+_DEFAULT_POLL_TIMEOUT = 30 * 60.0
+_DEFAULT_POLL_INTERVAL = 3.0
+_FINISHED = ("completed", "failed", "cancelled")
 
 
-def _parse_crawl(raw: Dict[str, Any], url: str, limit: int) -> CrawlResult:
-    pages = [
-        PageNode(
-            url=p.get("url", ""),
-            depth=p.get("depth", 0),
-            title=p.get("title"),
-            status_code=p.get("status_code"),
-            children=p.get("children", []),
-        )
-        for p in raw.get("pages", [])
-    ]
-    total = raw.get("total", raw.get("total_pages", 0))
-    artifact = raw.get("artifact")
-    return CrawlResult(
-        success=raw.get("success", False),
-        crawl_id=raw.get("crawl_id", ""),
-        url=raw.get("url", url),
-        total_pages=raw.get("total_pages", len(pages)),
-        max_depth_reached=raw.get("max_depth_reached", 0),
-        pages=pages,
-        artifact_id=artifact.get("artifact_id") if artifact else raw.get("artifact_id"),
-        has_more=raw.get("has_more", False),
-        total=total,
-        error=raw.get("error"),
+def _node(p: Dict[str, Any]) -> PageNode:
+    return PageNode(
+        url=p.get("url", ""),
+        depth=int(p.get("depth") or 0),
+        title=(p.get("metadata") or {}).get("title") or p.get("title"),
+        status_code=p.get("status_code"),
+        children=p.get("children_urls", p.get("children", [])) or [],
     )
 
 
-def _poll_crawl_status_sync(
-    transport: "_HttpTransport",
-    crawl_id: str,
-    timeout: float,
-    interval: float,
-) -> Optional[Dict[str, Any]]:
-    """Poll crawl status until terminal state or timeout (sync)."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        status = transport.get(f"webgrph/crawl/{crawl_id}")
-        state = status.get("status", "pending")
-        if state in ("completed", "failed", "cancelled"):
-            return status
-        time.sleep(interval)
-    return None
+def _crawl_body(
+    url: str,
+    max_depth: int,
+    max_pages: int,
+    include_external_links: bool,
+    session_artifact_id: Optional[str],
+    fast_mode: Optional[bool],
+    capture_mode: Optional[str],
+    scope: Optional[Dict[str, Any]],
+    budget: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    return compact(
+        {
+            "url": url,
+            "max_depth": max_depth,
+            "max_pages": max_pages,
+            "include_external_links": include_external_links,
+            "session_artifact_id": session_artifact_id,
+            "fast_mode": fast_mode,
+            "capture_mode": capture_mode,
+            "scope": scope,
+            "budget": budget,
+        }
+    )
 
 
-async def _poll_crawl_status_async(
-    transport: "_AsyncHttpTransport",
-    crawl_id: str,
-    timeout: float,
-    interval: float,
-) -> Optional[Dict[str, Any]]:
-    """Poll crawl status until terminal state or timeout (async)."""
-    import asyncio
+def _pages_params(cursor: Optional[str], limit: int) -> Dict[str, Any]:
+    return compact({"cursor": cursor, "limit": limit})
 
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        status = await transport.get(f"webgrph/crawl/{crawl_id}")
-        state = status.get("status", "pending")
-        if state in ("completed", "failed", "cancelled"):
-            return status
-        await asyncio.sleep(interval)
-    return None
+
+def _result(
+    status: Dict[str, Any], url: str, pages: List[PageNode], error: Optional[str] = None
+) -> CrawlResult:
+    state = str(status.get("status") or "")
+    return CrawlResult(
+        success=state == "completed" and error is None,
+        crawl_id=str(status.get("crawl_id") or ""),
+        url=url,
+        total_pages=int(status.get("total_pages") or len(pages)),
+        max_depth_reached=int(status.get("max_depth_reached") or 0),
+        pages=pages,
+        artifact_id=status.get("artifact_id"),
+        has_more=False,
+        total=len(pages),
+        next_cursor=None,
+        error=error or status.get("error"),
+        status=state,
+    )
+
+
+def _event(data: Dict[str, Any], crawl_id: str) -> CrawlEvent:
+    meta = data.get("metadata") or {}
+    return CrawlEvent(
+        type=str(data.get("event_type") or data.get("type") or ""),
+        url=data.get("url") or meta.get("url"),
+        depth=data.get("depth"),
+        pages_found=data.get("pages_found") or meta.get("pages_found"),
+        total_pages=data.get("total_pages") or meta.get("total_pages"),
+        artifact_id=data.get("artifact_id") or meta.get("artifact_id"),
+        stage_id=data.get("stage_id"),
+        sub_status=data.get("sub_status"),
+        progress_pct=data.get("progress_pct"),
+        metadata={"crawl_id": crawl_id, **(meta or data)},
+    )
+
+
+def _ops_session(
+    url: str,
+    selected_nodes: Optional[List[Any]],
+    hierarchy_data: Optional[Dict[str, Any]],
+    session_id: Optional[str],
+    last_crawl_id: Optional[str],
+) -> "Op[Dict[str, Any]]":
+    return _Op(
+        "POST",
+        "webgrph/sessions",
+        compact(
+            {
+                "url": url,
+                "selected_nodes": selected_nodes or [],
+                "hierarchy_data": hierarchy_data,
+                "session_id": session_id,
+                "last_crawl_id": last_crawl_id,
+            }
+        ),
+    )
 
 
 class WebgrphNamespace:
@@ -101,6 +133,35 @@ class WebgrphNamespace:
     def __init__(self, transport: "_HttpTransport") -> None:
         self._t = transport
 
+    def start_crawl(
+        self,
+        url: str,
+        max_depth: int = 3,
+        max_pages: int = 100,
+        include_external_links: bool = False,
+        session_artifact_id: Optional[str] = None,
+        fast_mode: Optional[bool] = None,
+        capture_mode: Optional[str] = None,
+        scope: Optional[Dict[str, Any]] = None,
+        budget: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Start a crawl (the API answers 202); returns its crawl id."""
+        raw = self._t.post(
+            "webgrph/crawl",
+            _crawl_body(
+                url,
+                max_depth,
+                max_pages,
+                include_external_links,
+                session_artifact_id,
+                fast_mode,
+                capture_mode,
+                scope,
+                budget,
+            ),
+        )
+        return str(raw.get("crawl_id") or "")
+
     def crawl(
         self,
         url: str,
@@ -108,197 +169,206 @@ class WebgrphNamespace:
         max_pages: int = 100,
         include_external_links: bool = False,
         session_artifact_id: Optional[str] = None,
-        limit: int = 100,
-        offset: int = 0,
+        fast_mode: Optional[bool] = None,
+        capture_mode: Optional[str] = None,
+        scope: Optional[Dict[str, Any]] = None,
+        budget: Optional[Dict[str, Any]] = None,
+        wait: bool = True,
         poll_timeout: float = _DEFAULT_POLL_TIMEOUT,
         poll_interval: float = _DEFAULT_POLL_INTERVAL,
     ) -> CrawlResult:
         """
-        Crawl a site and produce a SITE_HIERARCHY artifact.
-
-        The backend returns 202 immediately with a ``crawl_id`` and runs the
-        crawl asynchronously in a Celery worker. This method polls
-        ``get_crawl_status()`` until the crawl completes (or fails), then
-        fetches the discovered pages via ``get_crawl_pages()``.
-
-        Args:
-            url: Seed URL.
-            max_depth: Maximum BFS depth. Default 3.
-            max_pages: Maximum pages to crawl. Default 100.
-            include_external_links: Follow off-domain links.
-            session_artifact_id: AUTHENTICATED_SESSION artifact from Fetchyr.
-            limit: Max pages in this response (pagination). Default 100.
-            offset: Pagination offset. Default 0.
-            poll_timeout: Max seconds to wait for crawl completion. Default 300.
-            poll_interval: Seconds between status polls. Default 2.
-
-        Returns:
-            CrawlResult with pages list and artifact_id.
+        Crawl a site: start it, wait until it finishes, and load every page
+        node. A failed crawl, or one still running after ``poll_timeout``,
+        comes back with ``success=False`` and ``error`` set. With
+        ``wait=False`` only the crawl id is returned (status "queued").
         """
-        body: Dict[str, Any] = {
-            "url": url,
-            "max_depth": max_depth,
-            "max_pages": max_pages,
-            "include_external_links": include_external_links,
-            "limit": limit,
-            "offset": offset,
-        }
-        if session_artifact_id:
-            body["session_artifact_id"] = session_artifact_id
-
-        raw = self._t.post("webgrph/crawl", body)
-        crawl_id = raw.get("crawl_id", "")
-        if not crawl_id:
-            return _parse_crawl(raw, url, limit)
-
-        final_status = _poll_crawl_status_sync(
-            self._t, crawl_id, poll_timeout, poll_interval
+        crawl_id = self.start_crawl(
+            url,
+            max_depth,
+            max_pages,
+            include_external_links,
+            session_artifact_id,
+            fast_mode,
+            capture_mode,
+            scope,
+            budget,
         )
-        if final_status is None:
-            return CrawlResult(
-                success=False,
-                crawl_id=crawl_id,
-                url=url,
-                total_pages=0,
-                max_depth_reached=0,
-                error=f"Crawl timed out after {poll_timeout}s",
+        if not wait:
+            return _result({"crawl_id": crawl_id, "status": "queued"}, url, [])
+        deadline = time.monotonic() + poll_timeout
+        status = self.get_crawl_status(crawl_id)
+        while status.get("status") not in _FINISHED:
+            if time.monotonic() + poll_interval > deadline:
+                return _result(
+                    status,
+                    url,
+                    [],
+                    error=f"Crawl {crawl_id} still running after {poll_timeout}s",
+                )
+            time.sleep(poll_interval)
+            status = self.get_crawl_status(crawl_id)
+        if status.get("status") != "completed":
+            return _result(
+                status,
+                url,
+                [],
+                error=status.get("error") or f"Crawl {status.get('status')}",
             )
+        return _result(status, url, self.crawl_all_pages(crawl_id))
 
-        if final_status.get("status") == "failed":
-            return CrawlResult(
-                success=False,
-                crawl_id=crawl_id,
-                url=url,
-                total_pages=0,
-                max_depth_reached=0,
-                error=final_status.get("error", "Crawl failed"),
-            )
+    def crawl_all(self, url: str, **kwargs: Any) -> List[PageNode]:
+        """Every page node of a finished crawl (same options as ``crawl``)."""
+        return self.crawl(url, **kwargs).pages
 
-        pages_raw = self._t.get(f"webgrph/crawl/{crawl_id}/pages")
-        pages = [
-            PageNode(
-                url=p.get("url", ""),
-                depth=p.get("depth", 0),
-                title=(p.get("metadata") or {}).get("title") or p.get("title"),
-                status_code=p.get("status_code"),
-                children=p.get("children_urls", p.get("children", [])),
-            )
-            for p in pages_raw.get("nodes", [])
-        ]
-        return CrawlResult(
-            success=True,
-            crawl_id=crawl_id,
-            url=url,
-            total_pages=pages_raw.get("total", len(pages)),
-            max_depth_reached=final_status.get("max_depth_reached", 0),
-            pages=pages,
-            artifact_id=final_status.get("artifact_id"),
-            has_more=pages_raw.get("next_cursor") is not None,
-            total=pages_raw.get("total", len(pages)),
-            next_cursor=pages_raw.get("next_cursor"),
-            error=None,
-        )
-
-    def crawl_all(
+    def crawl_stream(
         self,
         url: str,
         max_depth: int = 3,
-        max_pages: int = 1000,
+        max_pages: int = 100,
         include_external_links: bool = False,
         session_artifact_id: Optional[str] = None,
-        poll_timeout: float = _DEFAULT_POLL_TIMEOUT,
-        poll_interval: float = _DEFAULT_POLL_INTERVAL,
-    ) -> List[PageNode]:
-        """
-        Auto-paginate crawl results, returning all discovered pages.
-
-        Returns:
-            Complete list of PageNode objects.
-        """
-        all_pages: List[PageNode] = []
-        result = self.crawl(
-            url,
-            max_depth=max_depth,
-            max_pages=max_pages,
-            include_external_links=include_external_links,
-            session_artifact_id=session_artifact_id,
-            limit=100,
-            offset=0,
-            poll_timeout=poll_timeout,
-            poll_interval=poll_interval,
+    ) -> Iterator[CrawlEvent]:
+        """Start a crawl and yield its progress events (Server-Sent Events)."""
+        crawl_id = self.start_crawl(
+            url, max_depth, max_pages, include_external_links, session_artifact_id
         )
-        all_pages.extend(result.pages)
-        cursor = result.next_cursor
-        while result.has_more and cursor:
-            pages_raw = self._t.get(
-                f"webgrph/crawl/{result.crawl_id}/pages",
-                params={"cursor": cursor} if cursor else None,
-            )
-            new_pages = [
-                PageNode(
-                    url=p.get("url", ""),
-                    depth=p.get("depth", 0),
-                    title=(p.get("metadata") or {}).get("title") or p.get("title"),
-                    status_code=p.get("status_code"),
-                    children=p.get("children_urls", p.get("children", [])),
-                )
-                for p in pages_raw.get("nodes", [])
-            ]
-            all_pages.extend(new_pages)
-            cursor = pages_raw.get("next_cursor")
-            if not cursor:
-                break
-        return all_pages
+        for data in self.crawl_events(crawl_id):
+            yield _event(data, crawl_id)
 
     def get_crawl_status(self, crawl_id: str) -> Dict[str, Any]:
-        """Poll crawl status and stats."""
-        return self._t.get(f"webgrph/crawl/{crawl_id}")
+        return run(self._t, _Op("GET", f"webgrph/crawl/{crawl_id}"))
 
-    def get_crawl_events(self, crawl_id: str) -> Dict[str, Any]:
-        """Get SSE events for a crawl."""
-        return self._t.get(f"webgrph/crawl/{crawl_id}/events")
+    def cancel_crawl(self, crawl_id: str) -> Dict[str, Any]:
+        return run(self._t, _Op("POST", f"webgrph/crawl/{crawl_id}/cancel", {}))
 
-    def get_crawl_pages(self, crawl_id: str) -> Dict[str, Any]:
-        """Get paginated list of discovered pages."""
-        return self._t.get(f"webgrph/crawl/{crawl_id}/pages")
+    def crawl_events(
+        self, crawl_id: str, last_sequence: Optional[int] = None
+    ) -> Iterator[Dict[str, Any]]:
+        """A crawl's progress events; ``last_sequence`` resumes after an event already seen."""
+        params = {"last_sequence": last_sequence} if last_sequence is not None else None
+        for _name, data in self._t.iter_sse(
+            "GET", f"webgrph/crawl/{crawl_id}/events", params=params
+        ):
+            yield data
 
-    def get_hierarchy(self, artifact_id: str) -> Dict[str, Any]:
-        """Retrieve a stored SITE_HIERARCHY artifact by ID."""
-        return self._t.get(f"webgrph/hierarchy/{artifact_id}")
+    def get_crawl_pages(
+        self, crawl_id: str, cursor: Optional[str] = None, limit: int = 500
+    ) -> Dict[str, Any]:
+        """One page of a crawl's hierarchy: ``nodes``, ``next_cursor``, ``total``."""
+        return run(
+            self._t,
+            _Op(
+                "GET",
+                f"webgrph/crawl/{crawl_id}/pages",
+                params=_pages_params(cursor, limit),
+            ),
+        )
 
-    def get_job(self, job_id: str) -> Dict[str, Any]:
-        """Poll a crawl job by its job ID."""
-        return self._t.get(f"webgrph/jobs/{job_id}")
+    def crawl_all_pages(self, crawl_id: str) -> List[PageNode]:
+        """Every page node of a crawl, following the cursor."""
+        nodes: List[PageNode] = []
+        cursor: Optional[str] = None
+        while True:
+            page = self.get_crawl_pages(crawl_id, cursor=cursor)
+            nodes.extend(_node(n) for n in page.get("nodes") or [])
+            cursor = page.get("next_cursor")
+            if not cursor:
+                return nodes
 
-    # ── Analytics ─────────────────────────────────────────────────────
+    # ── Reader view, detected APIs, sessions (moved from skanyr in 0.3) ──
+
+    def reader_view(
+        self,
+        url: str,
+        crawl_id: Optional[str] = None,
+        session_artifact_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return run(
+            self._t,
+            _Op(
+                "POST",
+                "webgrph/reader-view",
+                compact(
+                    {
+                        "url": url,
+                        "crawl_id": crawl_id,
+                        "session_artifact_id": session_artifact_id,
+                    }
+                ),
+            ),
+        )
+
+    def detected_apis(self, page_url: str) -> Dict[str, Any]:
+        return run(
+            self._t, _Op("GET", "webgrph/detected-apis", params={"page_url": page_url})
+        )
+
+    def list_sessions(self, active_only: Optional[bool] = None) -> List[Dict[str, Any]]:
+        return run(
+            self._t,
+            _Op(
+                "GET",
+                "webgrph/sessions",
+                params=compact({"active_only": active_only}),
+                parse=as_list,
+            ),
+        )
+
+    def save_session(
+        self,
+        url: str,
+        selected_nodes: Optional[List[Any]] = None,
+        hierarchy_data: Optional[Dict[str, Any]] = None,
+        session_id: Optional[str] = None,
+        last_crawl_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return run(
+            self._t,
+            _ops_session(
+                url, selected_nodes, hierarchy_data, session_id, last_crawl_id
+            ),
+        )
+
+    def get_session(self, session_id: str) -> Dict[str, Any]:
+        return run(self._t, _Op("GET", f"webgrph/sessions/{session_id}"))
+
+    def delete_session(self, session_id: str) -> None:
+        run(self._t, _Op("DELETE", f"webgrph/sessions/{session_id}"))
+
+    def end_session(self, session_id: str) -> Dict[str, Any]:
+        return run(self._t, _Op("POST", f"webgrph/sessions/{session_id}/end", {}))
+
+    def update_session_job(self, session_id: str, job_id: str) -> Dict[str, Any]:
+        return run(
+            self._t,
+            _Op(
+                "PATCH", f"webgrph/sessions/{session_id}/job", params={"job_id": job_id}
+            ),
+        )
+
+    # ── Analytics ─────────────────────────────────────────────────────────
 
     def get_dashboard_summary(self) -> Dict[str, Any]:
-        """Get analytics dashboard summary."""
-        return self._t.get("webgrph/analytics/dashboard/summary")
+        return run(self._t, _Op("GET", "webgrph/analytics/dashboard/summary"))
 
     def get_error_summary(self) -> Dict[str, Any]:
-        """Get error summary analytics."""
-        return self._t.get("webgrph/analytics/error-summary")
+        return run(self._t, _Op("GET", "webgrph/analytics/error-summary"))
 
     def get_job_trends(self) -> Dict[str, Any]:
-        """Get job trends analytics."""
-        return self._t.get("webgrph/analytics/job-trends")
+        return run(self._t, _Op("GET", "webgrph/analytics/job-trends"))
 
     def get_discovery_patterns(self) -> Dict[str, Any]:
-        """Get content discovery pattern analytics."""
-        return self._t.get("webgrph/analytics/content/discovery-patterns")
+        return run(self._t, _Op("GET", "webgrph/analytics/content/discovery-patterns"))
 
     def get_efficiency_metrics(self) -> Dict[str, Any]:
-        """Get scraping efficiency metrics."""
-        return self._t.get("webgrph/analytics/scraping/efficiency-metrics")
+        return run(self._t, _Op("GET", "webgrph/analytics/scraping/efficiency-metrics"))
 
     def get_site_mapping_trends(self) -> Dict[str, Any]:
-        """Get site mapping trends."""
-        return self._t.get("webgrph/analytics/site-maps/trends")
+        return run(self._t, _Op("GET", "webgrph/analytics/site-maps/trends"))
 
     def get_user_behavior_insights(self) -> Dict[str, Any]:
-        """Get user behavior insights."""
-        return self._t.get("webgrph/analytics/users/behavior-insights")
+        return run(self._t, _Op("GET", "webgrph/analytics/users/behavior-insights"))
 
 
 class AsyncWebgrphNamespace:
@@ -307,6 +377,34 @@ class AsyncWebgrphNamespace:
     def __init__(self, transport: "_AsyncHttpTransport") -> None:
         self._t = transport
 
+    async def start_crawl(
+        self,
+        url: str,
+        max_depth: int = 3,
+        max_pages: int = 100,
+        include_external_links: bool = False,
+        session_artifact_id: Optional[str] = None,
+        fast_mode: Optional[bool] = None,
+        capture_mode: Optional[str] = None,
+        scope: Optional[Dict[str, Any]] = None,
+        budget: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        raw = await self._t.post(
+            "webgrph/crawl",
+            _crawl_body(
+                url,
+                max_depth,
+                max_pages,
+                include_external_links,
+                session_artifact_id,
+                fast_mode,
+                capture_mode,
+                scope,
+                budget,
+            ),
+        )
+        return str(raw.get("crawl_id") or "")
+
     async def crawl(
         self,
         url: str,
@@ -314,77 +412,52 @@ class AsyncWebgrphNamespace:
         max_pages: int = 100,
         include_external_links: bool = False,
         session_artifact_id: Optional[str] = None,
-        limit: int = 100,
-        offset: int = 0,
+        fast_mode: Optional[bool] = None,
+        capture_mode: Optional[str] = None,
+        scope: Optional[Dict[str, Any]] = None,
+        budget: Optional[Dict[str, Any]] = None,
+        wait: bool = True,
         poll_timeout: float = _DEFAULT_POLL_TIMEOUT,
         poll_interval: float = _DEFAULT_POLL_INTERVAL,
     ) -> CrawlResult:
         """Async equivalent of WebgrphNamespace.crawl."""
-        body: Dict[str, Any] = {
-            "url": url,
-            "max_depth": max_depth,
-            "max_pages": max_pages,
-            "include_external_links": include_external_links,
-            "limit": limit,
-            "offset": offset,
-        }
-        if session_artifact_id:
-            body["session_artifact_id"] = session_artifact_id
-
-        raw = await self._t.post("webgrph/crawl", body)
-        crawl_id = raw.get("crawl_id", "")
-        if not crawl_id:
-            return _parse_crawl(raw, url, limit)
-
-        final_status = await _poll_crawl_status_async(
-            self._t, crawl_id, poll_timeout, poll_interval
+        crawl_id = await self.start_crawl(
+            url,
+            max_depth,
+            max_pages,
+            include_external_links,
+            session_artifact_id,
+            fast_mode,
+            capture_mode,
+            scope,
+            budget,
         )
-        if final_status is None:
-            return CrawlResult(
-                success=False,
-                crawl_id=crawl_id,
-                url=url,
-                total_pages=0,
-                max_depth_reached=0,
-                error=f"Crawl timed out after {poll_timeout}s",
+        if not wait:
+            return _result({"crawl_id": crawl_id, "status": "queued"}, url, [])
+        deadline = time.monotonic() + poll_timeout
+        status = await self.get_crawl_status(crawl_id)
+        while status.get("status") not in _FINISHED:
+            if time.monotonic() + poll_interval > deadline:
+                return _result(
+                    status,
+                    url,
+                    [],
+                    error=f"Crawl {crawl_id} still running after {poll_timeout}s",
+                )
+            await asyncio.sleep(poll_interval)
+            status = await self.get_crawl_status(crawl_id)
+        if status.get("status") != "completed":
+            return _result(
+                status,
+                url,
+                [],
+                error=status.get("error") or f"Crawl {status.get('status')}",
             )
+        return _result(status, url, await self.crawl_all_pages(crawl_id))
 
-        if final_status.get("status") == "failed":
-            return CrawlResult(
-                success=False,
-                crawl_id=crawl_id,
-                url=url,
-                total_pages=0,
-                max_depth_reached=0,
-                error=final_status.get("error", "Crawl failed"),
-            )
+    async def crawl_all(self, url: str, **kwargs: Any) -> List[PageNode]:
+        return (await self.crawl(url, **kwargs)).pages
 
-        pages_raw = await self._t.get(f"webgrph/crawl/{crawl_id}/pages")
-        pages = [
-            PageNode(
-                url=p.get("url", ""),
-                depth=p.get("depth", 0),
-                title=(p.get("metadata") or {}).get("title") or p.get("title"),
-                status_code=p.get("status_code"),
-                children=p.get("children_urls", p.get("children", [])),
-            )
-            for p in pages_raw.get("nodes", [])
-        ]
-        return CrawlResult(
-            success=True,
-            crawl_id=crawl_id,
-            url=url,
-            total_pages=pages_raw.get("total", len(pages)),
-            max_depth_reached=final_status.get("max_depth_reached", 0),
-            pages=pages,
-            artifact_id=final_status.get("artifact_id"),
-            has_more=pages_raw.get("next_cursor") is not None,
-            total=pages_raw.get("total", len(pages)),
-            next_cursor=pages_raw.get("next_cursor"),
-            error=None,
-        )
-
-    @asynccontextmanager
     async def crawl_stream(
         self,
         url: str,
@@ -392,134 +465,147 @@ class AsyncWebgrphNamespace:
         max_pages: int = 100,
         include_external_links: bool = False,
         session_artifact_id: Optional[str] = None,
-    ) -> AsyncIterator[AsyncIterator[CrawlEvent]]:
-        """
-        Async SSE event stream for a site crawl.
-
-        Starts the crawl via POST /webgrph/crawl, then subscribes to
-        GET /webgrph/crawl/{crawl_id}/events for real-time pipeline events.
-
-        The SSE stream uses the ``?token=`` query parameter for auth because
-        ``EventSource`` cannot send custom HTTP headers.
-
-        Usage::
-
-            async with client.webgrph.crawl_stream("https://example.com") as events:
-                async for event in events:
-                    print(event.type, event.url, event.pages_found)
-        """
-        try:
-            import httpx
-        except ImportError as exc:
-            raise RuntimeError("httpx is required for crawl_stream") from exc
-
-        body: Dict[str, Any] = {
-            "url": url,
-            "max_depth": max_depth,
-            "max_pages": max_pages,
-            "include_external_links": include_external_links,
-        }
-        if session_artifact_id:
-            body["session_artifact_id"] = session_artifact_id
-
-        raw = await self._t.post("webgrph/crawl", body)
-        crawl_id = raw.get("crawl_id", "")
-        if not crawl_id:
-            raise RuntimeError("Crawl start failed: no crawl_id returned")
-
-        sse_url = self._t._url(f"webgrph/crawl/{crawl_id}/events")
-        sse_url = f"{sse_url}?token={self._t._api_key}"
-
-        async with httpx.AsyncClient(timeout=None) as http:
-            async with http.stream(
-                "GET",
-                sse_url,
-                headers={"Accept": "text/event-stream"},
-            ) as response:
-                from kloakd._http import _HttpTransport
-                _HttpTransport._raise_for_status(response.status_code, b"")
-
-                async def _event_iter() -> AsyncIterator[CrawlEvent]:
-                    event_type = ""
-                    data_lines: list[str] = []
-                    async for line in response.aiter_lines():
-                        line = line.rstrip("\n\r")
-                        if not line:
-                            if data_lines:
-                                data_str = "\n".join(data_lines)
-                                try:
-                                    data = _json.loads(data_str)
-                                    yield CrawlEvent(
-                                        type=data.get("event_type", event_type or ""),
-                                        url=data.get("url"),
-                                        depth=data.get("depth"),
-                                        pages_found=data.get("total_pages")
-                                        or data.get("pages_found"),
-                                        total_pages=data.get("total_pages"),
-                                        artifact_id=data.get("artifact_id"),
-                                        stage_id=data.get("stage_id"),
-                                        sub_status=data.get("sub_status"),
-                                        progress_pct=data.get("progress_pct"),
-                                        metadata=data.get("metadata", {}),
-                                    )
-                                except _json.JSONDecodeError:
-                                    pass
-                                event_type = ""
-                                data_lines = []
-                            continue
-                        if line.startswith("event:"):
-                            event_type = line[6:].strip()
-                        elif line.startswith("data:"):
-                            data_lines.append(line[5:].strip())
-                        elif line.startswith("id:"):
-                            pass
-
-                yield _event_iter()
+    ) -> AsyncIterator[CrawlEvent]:
+        """Start a crawl and yield its progress events (Server-Sent Events)."""
+        crawl_id = await self.start_crawl(
+            url, max_depth, max_pages, include_external_links, session_artifact_id
+        )
+        async for data in self.crawl_events(crawl_id):
+            yield _event(data, crawl_id)
 
     async def get_crawl_status(self, crawl_id: str) -> Dict[str, Any]:
-        """Async equivalent of WebgrphNamespace.get_crawl_status."""
-        return await self._t.get(f"webgrph/crawl/{crawl_id}")
+        return await arun(self._t, _Op("GET", f"webgrph/crawl/{crawl_id}"))
 
-    async def get_crawl_events(self, crawl_id: str) -> Dict[str, Any]:
-        """Async equivalent of WebgrphNamespace.get_crawl_events."""
-        return await self._t.get(f"webgrph/crawl/{crawl_id}/events")
+    async def cancel_crawl(self, crawl_id: str) -> Dict[str, Any]:
+        return await arun(self._t, _Op("POST", f"webgrph/crawl/{crawl_id}/cancel", {}))
 
-    async def get_crawl_pages(self, crawl_id: str) -> Dict[str, Any]:
-        """Async equivalent of WebgrphNamespace.get_crawl_pages."""
-        return await self._t.get(f"webgrph/crawl/{crawl_id}/pages")
+    async def crawl_events(
+        self, crawl_id: str, last_sequence: Optional[int] = None
+    ) -> AsyncIterator[Dict[str, Any]]:
+        params = {"last_sequence": last_sequence} if last_sequence is not None else None
+        async for _name, data in self._t.aiter_sse(
+            "GET", f"webgrph/crawl/{crawl_id}/events", params=params
+        ):
+            yield data
 
-    async def get_hierarchy(self, artifact_id: str) -> Dict[str, Any]:
-        """Async equivalent of WebgrphNamespace.get_hierarchy."""
-        return await self._t.get(f"webgrph/hierarchy/{artifact_id}")
+    async def get_crawl_pages(
+        self, crawl_id: str, cursor: Optional[str] = None, limit: int = 500
+    ) -> Dict[str, Any]:
+        return await arun(
+            self._t,
+            _Op(
+                "GET",
+                f"webgrph/crawl/{crawl_id}/pages",
+                params=_pages_params(cursor, limit),
+            ),
+        )
 
-    async def get_job(self, job_id: str) -> Dict[str, Any]:
-        """Async equivalent of WebgrphNamespace.get_job."""
-        return await self._t.get(f"webgrph/jobs/{job_id}")
+    async def crawl_all_pages(self, crawl_id: str) -> List[PageNode]:
+        nodes: List[PageNode] = []
+        cursor: Optional[str] = None
+        while True:
+            page = await self.get_crawl_pages(crawl_id, cursor=cursor)
+            nodes.extend(_node(n) for n in page.get("nodes") or [])
+            cursor = page.get("next_cursor")
+            if not cursor:
+                return nodes
+
+    async def reader_view(
+        self,
+        url: str,
+        crawl_id: Optional[str] = None,
+        session_artifact_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return await arun(
+            self._t,
+            _Op(
+                "POST",
+                "webgrph/reader-view",
+                compact(
+                    {
+                        "url": url,
+                        "crawl_id": crawl_id,
+                        "session_artifact_id": session_artifact_id,
+                    }
+                ),
+            ),
+        )
+
+    async def detected_apis(self, page_url: str) -> Dict[str, Any]:
+        return await arun(
+            self._t, _Op("GET", "webgrph/detected-apis", params={"page_url": page_url})
+        )
+
+    async def list_sessions(
+        self, active_only: Optional[bool] = None
+    ) -> List[Dict[str, Any]]:
+        return await arun(
+            self._t,
+            _Op(
+                "GET",
+                "webgrph/sessions",
+                params=compact({"active_only": active_only}),
+                parse=as_list,
+            ),
+        )
+
+    async def save_session(
+        self,
+        url: str,
+        selected_nodes: Optional[List[Any]] = None,
+        hierarchy_data: Optional[Dict[str, Any]] = None,
+        session_id: Optional[str] = None,
+        last_crawl_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return await arun(
+            self._t,
+            _ops_session(
+                url, selected_nodes, hierarchy_data, session_id, last_crawl_id
+            ),
+        )
+
+    async def get_session(self, session_id: str) -> Dict[str, Any]:
+        return await arun(self._t, _Op("GET", f"webgrph/sessions/{session_id}"))
+
+    async def delete_session(self, session_id: str) -> None:
+        await arun(self._t, _Op("DELETE", f"webgrph/sessions/{session_id}"))
+
+    async def end_session(self, session_id: str) -> Dict[str, Any]:
+        return await arun(
+            self._t, _Op("POST", f"webgrph/sessions/{session_id}/end", {})
+        )
+
+    async def update_session_job(self, session_id: str, job_id: str) -> Dict[str, Any]:
+        return await arun(
+            self._t,
+            _Op(
+                "PATCH", f"webgrph/sessions/{session_id}/job", params={"job_id": job_id}
+            ),
+        )
 
     async def get_dashboard_summary(self) -> Dict[str, Any]:
-        """Async equivalent of WebgrphNamespace.get_dashboard_summary."""
-        return await self._t.get("webgrph/analytics/dashboard/summary")
+        return await arun(self._t, _Op("GET", "webgrph/analytics/dashboard/summary"))
 
     async def get_error_summary(self) -> Dict[str, Any]:
-        """Async equivalent of WebgrphNamespace.get_error_summary."""
-        return await self._t.get("webgrph/analytics/error-summary")
+        return await arun(self._t, _Op("GET", "webgrph/analytics/error-summary"))
 
     async def get_job_trends(self) -> Dict[str, Any]:
-        """Async equivalent of WebgrphNamespace.get_job_trends."""
-        return await self._t.get("webgrph/analytics/job-trends")
+        return await arun(self._t, _Op("GET", "webgrph/analytics/job-trends"))
 
     async def get_discovery_patterns(self) -> Dict[str, Any]:
-        """Async equivalent of WebgrphNamespace.get_discovery_patterns."""
-        return await self._t.get("webgrph/analytics/content/discovery-patterns")
+        return await arun(
+            self._t, _Op("GET", "webgrph/analytics/content/discovery-patterns")
+        )
 
     async def get_efficiency_metrics(self) -> Dict[str, Any]:
-        """Async equivalent of WebgrphNamespace.get_efficiency_metrics."""
-        return await self._t.get("webgrph/analytics/scraping/efficiency-metrics")
+        return await arun(
+            self._t, _Op("GET", "webgrph/analytics/scraping/efficiency-metrics")
+        )
 
     async def get_site_mapping_trends(self) -> Dict[str, Any]:
-        """Async equivalent of WebgrphNamespace.get_site_mapping_trends."""
-        return await self._t.get("webgrph/analytics/site-maps/trends")
+        return await arun(self._t, _Op("GET", "webgrph/analytics/site-maps/trends"))
 
     async def get_user_behavior_insights(self) -> Dict[str, Any]:
-        """Async equivalent of WebgrphNamespace.get_user_behavior_insights."""
-        return await self._t.get("webgrph/analytics/users/behavior-insights")
+        return await arun(
+            self._t, _Op("GET", "webgrph/analytics/users/behavior-insights")
+        )

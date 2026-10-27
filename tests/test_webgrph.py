@@ -6,7 +6,7 @@ import pytest
 import respx
 
 from kloakd import CrawlResult, Kloakd, PageNode, SiteCrawlResult
-from tests.conftest import TEST_BASE_URL, TEST_ORG_ID, ORG_PREFIX, mock_response
+from tests.conftest import ORG_PREFIX, TEST_BASE_URL, TEST_ORG_ID, mock_response
 
 
 @pytest.fixture
@@ -62,23 +62,7 @@ def test_crawl_success(client: Kloakd) -> None:
 
 
 @respx.mock
-def test_get_hierarchy(client: Kloakd) -> None:
-    respx.get(f"{TEST_BASE_URL}{ORG_PREFIX}/webgrph/hierarchy/art-001").mock(
-        return_value=mock_response({"artifact_id": "art-001", "pages": []})
-    )
-    result = client.webgrph.get_hierarchy("art-001")
-    assert result["artifact_id"] == "art-001"
-
-
 @respx.mock
-def test_get_job(client: Kloakd) -> None:
-    respx.get(f"{TEST_BASE_URL}{ORG_PREFIX}/webgrph/jobs/job-001").mock(
-        return_value=mock_response({"job_id": "job-001", "status": "completed"})
-    )
-    result = client.webgrph.get_job("job-001")
-    assert result["status"] == "completed"
-
-
 @respx.mock
 def test_crawl_all_autopaginates(client: Kloakd) -> None:
     respx.post(f"{TEST_BASE_URL}{ORG_PREFIX}/webgrph/crawl").mock(

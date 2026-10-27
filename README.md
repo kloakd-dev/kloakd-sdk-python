@@ -52,7 +52,7 @@ for book in data.records[:3]:
 |---|---|---|
 | `client.evadr` | Evadr | Anti-bot bypass (5-tier escalation) |
 | `client.webgrph` | Webgrph | Site mapping & BFS crawl |
-| `client.skanyr` | Skanyr | Two-phase API discovery |
+| `client.skanyr` | Skanyr | Site knowledge store: sites, resources, search, history |
 | `client.nexus` | Nexus | 5-layer strategy engine |
 | `client.parlyr` | Parlyr | Conversational NLP → extraction intent |
 | `client.fetchyr` | Fetchyr | RPA, authentication, MFA, workflows |
@@ -67,15 +67,12 @@ evadr.fetch()    → artifact_id (FETCHED_CONTENT)
   └─→ kolektr.page(fetch_artifact_id=...)       # skip re-fetch
   └─→ webgrph.crawl(session_artifact_id=...)    # authenticated crawl
 
-fetchyr.login()  → artifact_id (AUTHENTICATED_SESSION)
+fetchyr.authenticate() → artifact_id (AUTHENTICATED_SESSION)
   └─→ evadr.fetch(session_artifact_id=...)      # authenticated fetch
   └─→ webgrph.crawl(session_artifact_id=...)
 
-webgrph.crawl()  → artifact_id (SITE_HIERARCHY)
-  └─→ skanyr.discover(site_hierarchy_artifact_id=...)   # skip Phase 1
-
-skanyr.discover() → artifact_id (API_MAP)
-  └─→ kolektr.page(api_map_artifact_id=...)     # API-backed extraction
+webgrph.crawl()  → crawl_id (SITE_HIERARCHY)
+  └─→ skanyr.site_from_crawl(crawl_id)          # into the site store
 ```
 
 ## Async Client
@@ -91,9 +88,8 @@ async def main():
                                        fetch_artifact_id=fetch.artifact_id)
 
     # SSE stream
-    async with client.webgrph.crawl_stream("https://books.toscrape.com") as events:
-        async for event in events:
-            print(event.type, event.url)
+    async for event in client.webgrph.crawl_stream("https://books.toscrape.com"):
+        print(event.type, event.url)
 ```
 
 ## Error Handling
@@ -119,44 +115,43 @@ except KloakdError as e:
 |---|---|---|
 | `AuthenticationError` | 401 | Invalid or expired API key |
 | `NotEntitledError` | 403 | Plan doesn't include this module |
-| `RateLimitError` | 429 | Quota exceeded (has `retry_after` seconds) |
+| `PaymentRequiredError` | 402 | The plan's last payment failed |
+| `QuotaExceededError` | 429 | GB allocation and top-ups used up (`gb_exhausted`; not retried) |
+| `RateLimitError` | 429 | Request rate exceeded (has `retry_after` seconds; retried) |
 | `UpstreamError` | 502 | Target site unreachable |
+| `BillingUnavailableError` | 503 | Usage could not be checked; retried after `retry_after` |
+| `JobFailedError` / `JobTimeoutError` | — | A fetch job or crawl failed, or was still running when the wait ran out |
 | `ApiError` | 4xx/5xx | Any other API error |
 
-## Pagination
+**Long fetches:** the API answers a synchronous fetch within about 85
+seconds; one still running then continues as a job (HTTP 202).
+`evadr.fetch` follows it to its result (`poll_interval`, `poll_timeout`).
+
+## Crawls and pages
 
 ```python
-# Manual pagination
-result = client.skanyr.discover("https://api.example.com", limit=100, offset=0)
-print(result.has_more, result.total)
-
-# Auto-paginate (recommended)
-all_endpoints = client.skanyr.discover_all("https://api.example.com")
-all_records   = client.kolektr.page_all("https://example.com")
-all_pages     = client.webgrph.crawl_all("https://example.com")
+crawl = client.webgrph.crawl("https://example.com")   # waits, then loads every page
+all_pages = crawl.pages
+page = client.webgrph.get_crawl_pages(crawl.crawl_id, limit=100)   # one page, by cursor
+all_records = client.kolektr.page_all("https://example.com")
 ```
 
 ## Fetchyr — RPA & Authentication
 
 ```python
-# Login and produce a reusable session
-session = client.fetchyr.login(
-    url="https://app.example.com/login",
-    username_selector="#email",
-    password_selector="#password",
-    username="user@example.com",
-    password="secret",
-)
+# Store credentials once, then log in and produce a reusable session
+client.fetchyr.store_credentials("app", username="user@example.com", password="secret")
+session = client.fetchyr.authenticate("app", "https://app.example.com/login")
 
 # Detect and handle MFA
 mfa = client.fetchyr.detect_mfa("https://app.example.com/mfa",
                                   session_artifact_id=session.artifact_id)
 if mfa.mfa_detected:
-    result = client.fetchyr.submit_mfa(mfa.challenge_id, code="123456")
+    challenge = client.fetchyr.submit_mfa(mfa.challenge_id, "123456")
 
 # Detect forms, run workflows, deduplicate records
 forms  = client.fetchyr.detect_forms("https://example.com/signup")
-dedup  = client.fetchyr.check_duplicates(records, domain="example.com")
+seen   = client.fetchyr.check_duplicate("https://example.com/item/1")
 ```
 
 ## Links

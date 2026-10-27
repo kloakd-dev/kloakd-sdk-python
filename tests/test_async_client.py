@@ -7,7 +7,6 @@ import respx
 
 from kloakd import (
     AsyncKloakd,
-    DiscoverResult,
     ExtractionResult,
     FetchResult,
     NexusAnalyzeResult,
@@ -15,7 +14,7 @@ from kloakd import (
     SessionResult,
     SiteCrawlResult,
 )
-from tests.conftest import TEST_BASE_URL, TEST_ORG_ID, ORG_PREFIX, mock_response
+from tests.conftest import ORG_PREFIX, TEST_BASE_URL, TEST_ORG_ID, mock_response
 
 
 @pytest.fixture
@@ -131,23 +130,12 @@ async def test_async_webgrph_crawl(async_client: AsyncKloakd) -> None:
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_async_skanyr_discover(async_client: AsyncKloakd) -> None:
-    respx.post(f"{TEST_BASE_URL}{ORG_PREFIX}/skanyr/discover").mock(
-        return_value=mock_response({
-            "success": True,
-            "discovery_id": "d-async-001",
-            "url": "https://api.example.com",
-            "total_endpoints": 1,
-            "endpoints": [{"url": "https://api.example.com/v1", "method": "GET", "api_type": "rest", "confidence": 0.9, "parameters": {}}],
-            "artifact_id": "art-map-async",
-            "has_more": False,
-            "total": 1,
-            "error": None,
-        })
+async def test_async_skanyr_site_from_crawl(async_client: AsyncKloakd) -> None:
+    respx.post(f"{TEST_BASE_URL}{ORG_PREFIX}/skanyr/sites/from-crawl/crawl-1").mock(
+        return_value=mock_response({"id": "site-async-1"})
     )
-    result = await async_client.skanyr.discover("https://api.example.com")
-    assert isinstance(result, DiscoverResult)
-    assert result.total_endpoints == 1
+    site = await async_client.skanyr.site_from_crawl("crawl-1")
+    assert site["id"] == "site-async-1"
 
 
 @respx.mock
@@ -155,16 +143,14 @@ async def test_async_skanyr_discover(async_client: AsyncKloakd) -> None:
 async def test_async_nexus_analyze(async_client: AsyncKloakd) -> None:
     respx.post(f"{TEST_BASE_URL}{ORG_PREFIX}/nexus/analyze").mock(
         return_value=mock_response({
+            "url": "https://example.com",
             "perception_id": "perc-async-001",
             "strategy": {},
             "page_type": "listing",
-            "complexity_level": "low",
-            "artifact_id": None,
-            "duration_ms": 100,
-            "error": None,
+            "confidence": 0.8,
         })
     )
-    result = await async_client.nexus.analyze("https://example.com")
+    result = await async_client.nexus.analyze("https://example.com", "<html></html>")
     assert isinstance(result, NexusAnalyzeResult)
     assert result.perception_id == "perc-async-001"
 
@@ -192,24 +178,11 @@ async def test_async_parlyr_parse(async_client: AsyncKloakd) -> None:
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_async_fetchyr_login(async_client: AsyncKloakd) -> None:
-    respx.post(f"{TEST_BASE_URL}{ORG_PREFIX}/fetchyr/login").mock(
-        return_value=mock_response({
-            "success": True,
-            "session_id": "sess-async-001",
-            "url": "https://app.example.com/dashboard",
-            "artifact_id": "art-sess-async",
-            "screenshot_url": None,
-            "error": None,
-        })
+async def test_async_fetchyr_authenticate(async_client: AsyncKloakd) -> None:
+    respx.post(f"{TEST_BASE_URL}{ORG_PREFIX}/fetchyr/authenticate").mock(
+        return_value=mock_response({"success": True, "session_id": "sess-async-001", "artifact_id": "art-sess-async"})
     )
-    result = await async_client.fetchyr.login(
-        url="https://app.example.com/login",
-        username_selector="#email",
-        password_selector="#password",
-        username="user@example.com",
-        password="s3cr3t",
-    )
+    result = await async_client.fetchyr.authenticate("acme", "https://app.example.com/login")
     assert isinstance(result, SessionResult)
     assert result.artifact_id == "art-sess-async"
 
@@ -217,7 +190,7 @@ async def test_async_fetchyr_login(async_client: AsyncKloakd) -> None:
 @respx.mock
 @pytest.mark.asyncio
 async def test_async_fetchyr_detect_mfa(async_client: AsyncKloakd) -> None:
-    respx.post(f"{TEST_BASE_URL}{ORG_PREFIX}/fetchyr/detect-mfa").mock(
+    respx.post(f"{TEST_BASE_URL}{ORG_PREFIX}/fetchyr/mfa/detect").mock(
         return_value=mock_response({
             "mfa_detected": True,
             "challenge_id": "ch-async-001",
@@ -232,19 +205,12 @@ async def test_async_fetchyr_detect_mfa(async_client: AsyncKloakd) -> None:
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_async_fetchyr_check_duplicates(async_client: AsyncKloakd) -> None:
-    records = [{"title": "A"}, {"title": "A"}, {"title": "B"}]
+async def test_async_fetchyr_check_duplicate(async_client: AsyncKloakd) -> None:
     respx.post(f"{TEST_BASE_URL}{ORG_PREFIX}/fetchyr/deduplication/check").mock(
-        return_value=mock_response({
-            "unique_records": [{"title": "A"}, {"title": "B"}],
-            "duplicate_count": 1,
-            "total_input": 3,
-            "error": None,
-        })
+        return_value=mock_response({"is_duplicate": False, "original_url": None, "similarity_score": 0.1, "match_type": None})
     )
-    result = await async_client.fetchyr.check_duplicates(records)
-    assert result.duplicate_count == 1
-    assert len(result.unique_records) == 2
+    result = await async_client.fetchyr.check_duplicate("https://e.com/a")
+    assert result.is_duplicate is False
 
 
 @respx.mock

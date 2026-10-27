@@ -6,8 +6,20 @@ import pytest
 import respx
 from httpx import Response
 
-from kloakd import AnalyzeResult, AuthenticationError, FetchResult, Kloakd, RateLimitError
-from tests.conftest import TEST_BASE_URL, TEST_ORG_ID, ORG_PREFIX, mock_response, error_response
+from kloakd import (
+    AnalyzeResult,
+    AuthenticationError,
+    FetchResult,
+    Kloakd,
+    RateLimitError,
+)
+from tests.conftest import (
+    ORG_PREFIX,
+    TEST_BASE_URL,
+    TEST_ORG_ID,
+    error_response,
+    mock_response,
+)
 
 
 @pytest.fixture
@@ -71,7 +83,8 @@ def test_fetch_raises_auth_error(client: Kloakd) -> None:
 
 
 @respx.mock
-def test_fetch_raises_rate_limit(client: Kloakd) -> None:
+def test_fetch_raises_rate_limit() -> None:
+    client = Kloakd(api_key="k", organization_id=TEST_ORG_ID, base_url=TEST_BASE_URL, max_retries=1)
     respx.post(f"{TEST_BASE_URL}{ORG_PREFIX}/evadr/fetch").mock(
         return_value=Response(429, json={"detail": "Too many requests", "retry_after": 30})
     )

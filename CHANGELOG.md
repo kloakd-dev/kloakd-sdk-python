@@ -8,6 +8,38 @@ Format: [Semantic Versioning](https://semver.org/). Types: `Added`, `Changed`, `
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-10-27
+
+Every request is now a live API route: `tests/test_contract.py` calls each
+public method of the sync and the async client and checks it against the
+API's route list. The table of what changed per call is in `ROUTES.md`.
+
+### Changed (breaking)
+- `fetchyr.login(...)` is replaced by `fetchyr.authenticate(credential_name, target_url)`; store credentials first with `store_credentials(name, username, password)`.
+- `nexus.analyze(url, html, constraints=None)` and `nexus.synthesize(url, html, goal)` take what the API requires; result fields follow the API (`verified`, `program`, `patterns`, …). `nexus.reason(query_type, parameters)`, `nexus.create_preference(user_id, preference_type, value)`.
+- `fetchyr.create_workflow(name, steps, description=None, workflow_type=None)`, `execute_workflow(workflow_id, target_url, ...)`, `create_multi_site_workflow(name, sites, ...)`, `create_dedup_session(name, strategy=None)`, `submit_mfa(challenge_id, resolution)` (resolves via the MFA queue, returns `MfaChallenge`).
+- `fetchyr.check_duplicates(records)` is replaced by `check_duplicate(url, content_hash=None, session_id=None)` → `DuplicateCheckResult`.
+- `evadr.scan(url)` takes only the URL; `evadr.get_job_events` is replaced by `evadr.job_events` (an iterator of SSE events).
+- Streams are plain iterators: `evadr.fetch_stream` and `webgrph.crawl_stream` (sync and async) yield events directly instead of an async context manager. `parlyr.chat_stream` on the async client keeps its context-manager form; the sync client gains `chat_stream` and the async client `chat`.
+- `kolektr.page` no longer takes `limit`/`offset` (the API returns all records); `page_all` makes one request.
+- Models: `DiscoverResult`, `DiscoverEvent`, `ApiEndpoint`, `FetchyrResult`, `MfaResult`, `DeduplicationResult` are removed; `MfaChallenge` and `DuplicateCheckResult` are added; the Nexus, workflow, form and session results carry the API's fields.
+
+### Removed (no API route)
+- `fetchyr.fetch` (use `evadr.fetch(url, session_artifact_id=...)`), `fetchyr.get_session`, `webgrph.get_hierarchy`, `webgrph.get_job`, and the skanyr discovery methods (`discover`, `discover_all`, `discover_stream`, `get_discovery`, `get_discovery_events`, `analyze_bundle`, `discover_page_live`, `hierarchy`, `expand_node`, `retry`, `health`, `get_api_map`, `get_job`).
+- Moved from `skanyr` to `webgrph`: `reader_view`, `detected_apis` and the session methods.
+
+### Added
+- `evadr.fetch` follows a synchronous fetch the API hands off as a job (202 after ~85 s, below Cloudflare's 100 s limit) to its result; `poll_interval`, `poll_timeout`; `evadr.wait_for_job`.
+- Typed errors: `PaymentRequiredError` (402), `QuotaExceededError` (429 `gb_exhausted`, not retried), `RateLimitError` (429, honours `Retry-After`), `BillingUnavailableError` (503, retried after `Retry-After`), `JobFailedError`, `JobTimeoutError`. Error messages read the API's `detail` object.
+- `evadr.profile`, `fetchyr.resume_execution`, the auth-chain calls, `webgrph.start_crawl`, `cancel_crawl`, `crawl_events`, `crawl_all_pages`, `webgrph` sessions, the skanyr site store (sites, sync, export, resources, search, findings, technologies, snapshots, timeline, diff, graph, extraction), and `page_all` on the async client.
+
+### Fixed
+- Streams opened their own HTTP client and ignored the one passed to the SDK; they now go through the SDK's transport.
+- `fetch_async` posted to the synchronous route with a stray `async` field; it uses `evadr/fetch/async`.
+
+### Security
+- `webgrph.crawl_stream` sent the API key as a URL query parameter; it is sent in the `Authorization` header.
+
 ## [0.2.0] — 2026-05-13
 
 ### Added

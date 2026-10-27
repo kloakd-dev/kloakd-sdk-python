@@ -9,8 +9,7 @@ serialised to dict via dataclasses.asdict() or inspected directly.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterator, List, Optional
-
+from typing import Any, Dict, List, Optional
 
 # ---------------------------------------------------------------------------
 # Evadr — Anti-Bot Intelligence
@@ -88,6 +87,8 @@ class CrawlResult:
     total: int = 0
     next_cursor: Optional[str] = None
     error: Optional[str] = None
+    #: queued, crawling, completed, failed or cancelled.
+    status: str = ""
 
     @property
     def ok(self) -> bool:
@@ -166,80 +167,40 @@ class CrawlProgressEvent:
 
 
 # ---------------------------------------------------------------------------
-# Skanyr — API Discovery
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class ApiEndpoint:
-    """A single API endpoint discovered by Skanyr."""
-
-    url: str
-    method: str
-    api_type: str
-    confidence: float = 0.0
-    parameters: Dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class DiscoverResult:
-    """Result of a Skanyr two-phase API discovery."""
-
-    success: bool
-    discovery_id: str
-    url: str
-    total_endpoints: int
-    endpoints: List[ApiEndpoint] = field(default_factory=list)
-    artifact_id: Optional[str] = None
-    has_more: bool = False
-    total: int = 0
-    error: Optional[str] = None
-
-    @property
-    def ok(self) -> bool:
-        return self.success and self.error is None
-
-
-@dataclass
-class DiscoverEvent:
-    """A single server-sent event from a Skanyr discovery stream."""
-
-    type: str
-    endpoint_url: Optional[str] = None
-    api_type: Optional[str] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
-
-
-# ---------------------------------------------------------------------------
 # Nexus — Strategy Engine (5-layer cognitive pipeline)
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class NexusAnalyzeResult:
-    """Result of a Nexus perception (analyze) call."""
+    """Result of nexus.analyze()."""
 
-    perception_id: str
+    url: str
+    perception_id: str = ""
+    reasoning_id: Optional[str] = None
     strategy: Dict[str, Any] = field(default_factory=dict)
     page_type: str = "unknown"
-    complexity_level: str = "unknown"
+    confidence: float = 0.0
     artifact_id: Optional[str] = None
-    duration_ms: int = 0
     error: Optional[str] = None
 
     @property
     def ok(self) -> bool:
         return self.error is None
 
-
 @dataclass
 class NexusSynthesisResult:
-    """Result of a Nexus synthesize call."""
+    """Result of nexus.synthesize()."""
 
-    strategy_id: str
+    url: str
+    goal: str
+    strategy_id: str = ""
     strategy_name: str = ""
-    generated_code: str = ""
-    artifact_id: Optional[str] = None
+    strategy_type: Optional[str] = None
+    #: The generated extraction program.
+    program: str = ""
+    steps: List[Dict[str, Any]] = field(default_factory=list)
+    confidence: float = 0.0
     synthesis_time_ms: int = 0
     error: Optional[str] = None
 
@@ -247,29 +208,26 @@ class NexusSynthesisResult:
     def ok(self) -> bool:
         return self.error is None
 
-
 @dataclass
 class NexusVerifyResult:
-    """Result of a Nexus verification call."""
+    """Result of nexus.verify()."""
 
-    verification_result_id: str
-    is_safe: bool
-    risk_score: float = 0.0
-    safety_score: float = 1.0
+    strategy_id: str
+    verified: bool
+    safety_score: float = 0.0
     violations: List[str] = field(default_factory=list)
-    duration_ms: int = 0
     error: Optional[str] = None
 
     @property
     def ok(self) -> bool:
-        return self.is_safe and self.error is None
-
+        return self.verified and self.error is None
 
 @dataclass
 class NexusExecuteResult:
-    """Result of a Nexus execute call."""
+    """Result of nexus.execute()."""
 
-    execution_result_id: str
+    url: str
+    strategy_id: str
     success: bool
     records: List[Dict[str, Any]] = field(default_factory=list)
     artifact_id: Optional[str] = None
@@ -280,22 +238,20 @@ class NexusExecuteResult:
     def ok(self) -> bool:
         return self.success and self.error is None
 
-
 @dataclass
 class NexusKnowledgeResult:
-    """Result of a Nexus knowledge (learn) call."""
+    """Result of nexus.knowledge()."""
 
+    execution_result_id: str
     learned_concepts: List[Dict[str, Any]] = field(default_factory=list)
-    learned_patterns: List[Dict[str, Any]] = field(default_factory=list)
-    has_more: bool = False
-    total: int = 0
+    patterns: List[Dict[str, Any]] = field(default_factory=list)
+    total_patterns: int = 0
     duration_ms: int = 0
     error: Optional[str] = None
 
     @property
     def ok(self) -> bool:
         return self.error is None
-
 
 # ---------------------------------------------------------------------------
 # Parlyr — Conversational NLP
@@ -350,45 +306,31 @@ class ChatTurn:
 
 @dataclass
 class SessionResult:
-    """Result of a Fetchyr RPA login operation."""
+    """Result of fetchyr.authenticate()."""
 
     success: bool
     session_id: str
+    #: The URL logged into (the request's target).
     url: str
     artifact_id: Optional[str] = None
-    screenshot_url: Optional[str] = None
+    target_domain: Optional[str] = None
+    auth_method: Optional[str] = None
     error: Optional[str] = None
 
     @property
     def ok(self) -> bool:
         return self.success and self.error is None
-
-
-@dataclass
-class FetchyrResult:
-    """Result of a Fetchyr authenticated fetch operation."""
-
-    success: bool
-    url: str
-    status_code: int
-    html: Optional[str] = None
-    artifact_id: Optional[str] = None
-    session_artifact_id: Optional[str] = None
-    error: Optional[str] = None
-
-    @property
-    def ok(self) -> bool:
-        return self.success and self.error is None
-
 
 @dataclass
 class WorkflowResult:
-    """Result of a Fetchyr create_workflow call."""
+    """An RPA workflow."""
 
     workflow_id: str
     name: str
+    description: Optional[str] = None
+    workflow_type: Optional[str] = None
     steps: List[Dict[str, Any]] = field(default_factory=list)
-    url: Optional[str] = None
+    is_active: bool = True
     created_at: str = ""
     error: Optional[str] = None
 
@@ -396,77 +338,71 @@ class WorkflowResult:
     def ok(self) -> bool:
         return self.error is None
 
-
 @dataclass
 class WorkflowExecutionResult:
-    """Result of a Fetchyr execute_workflow or get_execution call."""
+    """A workflow execution."""
 
     execution_id: str
     workflow_id: str
     status: str
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
-    records: List[Dict[str, Any]] = field(default_factory=list)
+    result: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
 
     @property
     def ok(self) -> bool:
         return self.status == "completed" and self.error is None
 
-
 @dataclass
 class FormDetectionResult:
-    """Result of a Fetchyr detect_forms call."""
+    """Result of fetchyr.detect_forms()."""
 
+    url: str = ""
+    #: The detected form fields.
     forms: List[Dict[str, Any]] = field(default_factory=list)
     total_forms: int = 0
+    login_form_detected: bool = False
     error: Optional[str] = None
 
     @property
     def ok(self) -> bool:
         return self.error is None
 
-
 @dataclass
 class MfaDetectionResult:
-    """Result of a Fetchyr detect_mfa call."""
+    """Result of fetchyr.detect_mfa()."""
 
     mfa_detected: bool = False
     challenge_id: Optional[str] = None
     mfa_type: Optional[str] = None
+    message: Optional[str] = None
     error: Optional[str] = None
 
     @property
     def ok(self) -> bool:
         return self.error is None
 
+@dataclass
+class MfaChallenge:
+    """A queued MFA challenge."""
+
+    id: str
+    status: str = ""
+    session_id: Optional[str] = None
+    mfa_type: Optional[str] = None
+    challenge_data: Dict[str, Any] = field(default_factory=dict)
+    expires_at: Optional[str] = None
+    created_at: Optional[str] = None
 
 @dataclass
-class MfaResult:
-    """Result of a Fetchyr submit_mfa call."""
+class DuplicateCheckResult:
+    """Result of fetchyr.check_duplicate()."""
 
-    success: bool
-    session_artifact_id: Optional[str] = None
-    error: Optional[str] = None
-
-    @property
-    def ok(self) -> bool:
-        return self.success and self.error is None
-
-
-@dataclass
-class DeduplicationResult:
-    """Result of a Fetchyr check_duplicates call."""
-
-    unique_records: List[Dict[str, Any]] = field(default_factory=list)
-    duplicate_count: int = 0
-    total_input: int = 0
-    error: Optional[str] = None
-
-    @property
-    def ok(self) -> bool:
-        return self.error is None
-
+    is_duplicate: bool
+    original_url: Optional[str] = None
+    similarity_score: Optional[float] = None
+    match_type: Optional[str] = None
 
 # ---------------------------------------------------------------------------
 # Kolektr — Data Extraction

@@ -130,3 +130,53 @@ class ApiError(KloakdError):
 
     def __init__(self, message: str, status_code: int) -> None:
         super().__init__(message, status_code=status_code)
+
+
+class PaymentRequiredError(KloakdError):
+    """
+    Raised when a paid plan's last payment failed (HTTP 402
+    ``payment_required``). New work starts again once the payment is settled.
+    """
+
+    def __init__(self, message: str, upgrade_url: str = "https://app.kloakd.dev/settings/billing") -> None:
+        super().__init__(message, status_code=402)
+        self.upgrade_url = upgrade_url
+
+
+class QuotaExceededError(KloakdError):
+    """
+    Raised when the plan's GB allocation and this period's top-ups are used
+    up (HTTP 429 ``gb_exhausted``). Not retried: retrying cannot succeed.
+    """
+
+    def __init__(self, message: str, tier: str = "", upgrade_url: str = "https://app.kloakd.dev/settings/billing") -> None:
+        super().__init__(message, status_code=429)
+        self.tier = tier
+        self.upgrade_url = upgrade_url
+
+
+class BillingUnavailableError(KloakdError):
+    """
+    Raised when the API could not check usage, so nothing was started
+    (HTTP 503 ``billing_unavailable``). Retried after ``retry_after`` seconds.
+    """
+
+    def __init__(self, message: str, retry_after: float = 30.0) -> None:
+        super().__init__(message, status_code=503)
+        self.retry_after = retry_after
+
+
+class JobFailedError(KloakdError):
+    """Raised when a job (a handed-off fetch, an async fetch or a crawl) ended as failed."""
+
+    def __init__(self, message: str, job_id: str) -> None:
+        super().__init__(message, status_code=None)
+        self.job_id = job_id
+
+
+class JobTimeoutError(KloakdError):
+    """Raised when a job was still running when the SDK's wait ran out; poll it later by ``job_id``."""
+
+    def __init__(self, message: str, job_id: str) -> None:
+        super().__init__(message, status_code=None)
+        self.job_id = job_id

@@ -6,7 +6,7 @@ import pytest
 import respx
 
 from kloakd import ExtractionResult, Kloakd
-from tests.conftest import TEST_BASE_URL, TEST_ORG_ID, ORG_PREFIX, mock_response
+from tests.conftest import ORG_PREFIX, TEST_BASE_URL, TEST_ORG_ID, mock_response
 
 
 @pytest.fixture
@@ -97,32 +97,18 @@ def test_extract_html(client: Kloakd) -> None:
 
 
 @respx.mock
-def test_page_pagination(client: Kloakd) -> None:
-    call_count = 0
 
-    def paginate_side_effect(request, **kwargs):
-        nonlocal call_count
-        call_count += 1
-        import json as _json
-        body = _json.loads(request.content)
-        offset = body.get("offset", 0)
-        if offset == 0:
-            return mock_response({
-                "success": True, "url": "https://ex.com", "method": "l1_css",
-                "records": [{"i": 1}], "total_records": 1,
-                "pages_scraped": 1, "artifact_id": None, "error": None,
-                "has_more": True, "total": 2,
-            })
-        return mock_response({
-            "success": True, "url": "https://ex.com", "method": "l1_css",
-            "records": [{"i": 2}], "total_records": 1,
-            "pages_scraped": 1, "artifact_id": None, "error": None,
-            "has_more": False, "total": 2,
-        })
 
-    respx.post(f"{TEST_BASE_URL}{ORG_PREFIX}/kolektr/extract").mock(
-        side_effect=paginate_side_effect
-    )
-    all_records = client.kolektr.page_all("https://ex.com")
-    assert len(all_records) == 2
-    assert call_count == 2
+@respx.mock
+def test_page_all_is_one_request_with_no_paging_fields(client: Kloakd) -> None:
+    """The API returns every record in one response; it takes no limit/offset."""
+    route = respx.post(f"{TEST_BASE_URL}{ORG_PREFIX}/kolektr/extract").mock(return_value=mock_response({
+        "success": True, "url": "https://ex.com", "method": "l1_css", "records": [{"i": 1}, {"i": 2}], "total_records": 2,
+    }))
+    records = client.kolektr.page_all("https://ex.com", schema={"title": "css:h1"})
+    import json as _json
+    sent = _json.loads(route.calls.last.request.content)
+    assert records == [{"i": 1}, {"i": 2}]
+    assert route.call_count == 1
+    assert "limit" not in sent and "offset" not in sent
+    assert sent["schema_spec"] == {"fields": [{"name": "title", "selector": "h1"}]}

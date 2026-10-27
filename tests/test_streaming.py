@@ -16,15 +16,16 @@ This exercises every line of the SSE parsing logic without a real network.
 from __future__ import annotations
 
 import json
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import contextmanager
 from typing import AsyncIterator, Iterator, List
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import respx
+from httpx import Response
 
 from kloakd import AsyncKloakd, Kloakd
-from tests.conftest import TEST_BASE_URL, TEST_ORG_ID, mock_response
-
+from tests.conftest import ORG_PREFIX, TEST_BASE_URL, TEST_ORG_ID, mock_response
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -156,211 +157,14 @@ def async_client() -> AsyncKloakd:
 # ── evadr.fetch_stream ────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_evadr_fetch_stream_yields_events(async_client: AsyncKloakd) -> None:
-    lines = _sse_lines(
-        {"type": "tier_start", "tier": 1, "vendor": None, "metadata": {}},
-        {"type": "tier_complete", "tier": 1, "vendor": "cloudflare", "metadata": {"bypassed": True}},
-        {"type": "done", "tier": 1, "vendor": "cloudflare", "metadata": {}},
-    )
-    mock_response = _MockAsyncStreamResponse(lines)
-    mock_client = _make_async_http_client(mock_response)
-
-    with patch("httpx.AsyncClient", return_value=mock_client):
-        collected = []
-        async with async_client.evadr.fetch_stream("https://example.com") as events:
-            async for event in events:
-                collected.append(event)
-
-    assert len(collected) == 3
-    assert collected[0].type == "tier_start"
-    assert collected[0].tier == 1
-    assert collected[1].type == "tier_complete"
-    assert collected[1].vendor == "cloudflare"
-    assert collected[2].type == "done"
-
-
 @pytest.mark.asyncio
-async def test_evadr_fetch_stream_skips_non_data_lines(async_client: AsyncKloakd) -> None:
-    lines = [
-        ": keep-alive",
-        "",
-        'data: {"type": "tier_start", "tier": 2, "vendor": null, "metadata": {}}',
-        "",
-        "comment: ignored",
-        'data: {"type": "done", "tier": 2, "vendor": null, "metadata": {}}',
-    ]
-    mock_response = _MockAsyncStreamResponse(lines)
-    mock_client = _make_async_http_client(mock_response)
-
-    with patch("httpx.AsyncClient", return_value=mock_client):
-        collected = []
-        async with async_client.evadr.fetch_stream("https://example.com", force_browser=True) as events:
-            async for event in events:
-                collected.append(event)
-
-    assert len(collected) == 2
-    assert collected[0].tier == 2
-
-
 @pytest.mark.asyncio
-async def test_evadr_fetch_stream_skips_malformed_json(async_client: AsyncKloakd) -> None:
-    lines = [
-        "data: {not valid json",
-        "data: {}",
-        'data: {"type": "ok", "tier": 1, "vendor": null, "metadata": {}}',
-    ]
-    mock_response = _MockAsyncStreamResponse(lines)
-    mock_client = _make_async_http_client(mock_response)
-
-    with patch("httpx.AsyncClient", return_value=mock_client):
-        collected = []
-        async with async_client.evadr.fetch_stream("https://example.com") as events:
-            async for event in events:
-                collected.append(event)
-
-    # malformed JSON skipped; empty data {} yields FetchEvent with empty type
-    assert collected[-1].type == "ok"
-
-
-# ── webgrph.crawl_stream ──────────────────────────────────────────────────────
-
 @pytest.mark.asyncio
-async def test_webgrph_crawl_stream_yields_events(async_client: AsyncKloakd) -> None:
-    lines = _sse_event_lines(
-        ("pipeline_step", {"event_type": "pipeline_step", "url": "https://example.com", "depth": 0, "total_pages": 1, "metadata": {}}),
-        ("pipeline_step", {"event_type": "pipeline_step", "url": "https://example.com/about", "depth": 1, "total_pages": 2, "metadata": {}}),
-        ("pipeline_complete", {"event_type": "pipeline_complete", "url": None, "depth": None, "total_pages": 2, "metadata": {}}),
-    )
-    mock_client = _MockAsyncClientForCrawlStream([], lines)
-
-    with patch("httpx.AsyncClient", return_value=mock_client):
-        collected = []
-        async with async_client.webgrph.crawl_stream("https://example.com") as events:
-            async for event in events:
-                collected.append(event)
-
-    assert len(collected) == 3
-    assert collected[0].type == "pipeline_step"
-    assert collected[0].url == "https://example.com"
-    assert collected[0].depth == 0
-    assert collected[0].pages_found == 1
-    assert collected[1].url == "https://example.com/about"
-    assert collected[2].type == "pipeline_complete"
-
-
 @pytest.mark.asyncio
-async def test_webgrph_crawl_stream_with_params(async_client: AsyncKloakd) -> None:
-    lines = _sse_event_lines(
-        ("pipeline_step", {"event_type": "pipeline_step", "url": "https://ex.com", "depth": 0, "total_pages": 1, "metadata": {}}),
-    )
-    mock_client = _MockAsyncClientForCrawlStream([], lines)
-
-    with patch("httpx.AsyncClient", return_value=mock_client):
-        collected = []
-        async with async_client.webgrph.crawl_stream(
-            "https://ex.com", max_depth=5, max_pages=200
-        ) as events:
-            async for event in events:
-                collected.append(event)
-
-    assert len(collected) == 1
-    # Verify POST request was called with correct payload
-    post_call = mock_client.request_calls[0]
-    assert post_call["method"] == "POST"
-    assert post_call["json"]["max_depth"] == 5
-    assert post_call["json"]["max_pages"] == 200
-
-
 @pytest.mark.asyncio
-async def test_webgrph_crawl_stream_skips_malformed_json(async_client: AsyncKloakd) -> None:
-    lines = [
-        "event: pipeline_step",
-        "data: BROKEN",
-        "",
-        "event: pipeline_step",
-        'data: {"event_type": "pipeline_step", "url": "https://x.com", "depth": 0, "total_pages": 1, "metadata": {}}',
-        "",
-    ]
-    mock_client = _MockAsyncClientForCrawlStream([], lines)
-
-    with patch("httpx.AsyncClient", return_value=mock_client):
-        collected = []
-        async with async_client.webgrph.crawl_stream("https://x.com") as events:
-            async for event in events:
-                collected.append(event)
-
-    assert len(collected) == 1
-    assert collected[0].url == "https://x.com"
-
-
-# ── skanyr.discover_stream ────────────────────────────────────────────────────
-
 @pytest.mark.asyncio
-async def test_skanyr_discover_stream_yields_events(async_client: AsyncKloakd) -> None:
-    lines = _sse_lines(
-        {"type": "endpoint_found", "endpoint_url": "https://api.example.com/v1/products", "api_type": "rest", "metadata": {"method": "GET"}},
-        {"type": "endpoint_found", "endpoint_url": "https://api.example.com/graphql", "api_type": "graphql", "metadata": {}},
-        {"type": "done", "endpoint_url": None, "api_type": None, "metadata": {}},
-    )
-    mock_response = _MockAsyncStreamResponse(lines)
-    mock_client = _make_async_http_client(mock_response)
-
-    with patch("httpx.AsyncClient", return_value=mock_client):
-        collected = []
-        async with async_client.skanyr.discover_stream("https://api.example.com") as events:
-            async for event in events:
-                collected.append(event)
-
-    assert len(collected) == 3
-    assert collected[0].type == "endpoint_found"
-    assert collected[0].endpoint_url == "https://api.example.com/v1/products"
-    assert collected[0].api_type == "rest"
-    assert collected[1].api_type == "graphql"
-    assert collected[2].type == "done"
-
-
 @pytest.mark.asyncio
-async def test_skanyr_discover_stream_with_hierarchy_artifact(async_client: AsyncKloakd) -> None:
-    lines = _sse_lines(
-        {"type": "done", "endpoint_url": None, "api_type": None, "metadata": {}},
-    )
-    mock_response = _MockAsyncStreamResponse(lines)
-    mock_client = _make_async_http_client(mock_response)
-
-    with patch("httpx.AsyncClient", return_value=mock_client):
-        async with async_client.skanyr.discover_stream(
-            "https://api.example.com",
-            site_hierarchy_artifact_id="art-hier-001",
-        ) as events:
-            async for _ in events:
-                pass
-
-    call_kwargs = mock_client.stream.call_args
-    assert call_kwargs[1]["json"]["site_hierarchy_artifact_id"] == "art-hier-001"
-
-
 @pytest.mark.asyncio
-async def test_skanyr_discover_stream_skips_non_data_lines(async_client: AsyncKloakd) -> None:
-    lines = [
-        ": heartbeat",
-        "",
-        'data: {"type": "endpoint_found", "endpoint_url": "https://api.x.com/ep", "api_type": "rest", "metadata": {}}',
-        "",
-    ]
-    mock_response = _MockAsyncStreamResponse(lines)
-    mock_client = _make_async_http_client(mock_response)
-
-    with patch("httpx.AsyncClient", return_value=mock_client):
-        collected = []
-        async with async_client.skanyr.discover_stream("https://api.x.com") as events:
-            async for event in events:
-                collected.append(event)
-
-    assert len(collected) == 1
-
-
-# ── parlyr.chat_stream (async) ────────────────────────────────────────────────
-
 @pytest.mark.asyncio
 async def test_parlyr_chat_stream_yields_events(async_client: AsyncKloakd) -> None:
     lines = _sse_event_lines(
@@ -493,3 +297,44 @@ def test_parlyr_chat_payload_contains_session_and_message(client: Kloakd) -> Non
     call_kwargs = mock_client.stream.call_args
     assert call_kwargs[1]["json"]["session_id"] == "sess-abc"
     assert call_kwargs[1]["json"]["message"] == "my message"
+
+
+
+def _sse(*payloads: dict) -> str:
+    return "".join(f"data: {json.dumps(p)}\n\n" for p in payloads) + ": keepalive\n\ndata: {not json}\n\n"
+
+
+@respx.mock
+def test_evadr_fetch_stream_starts_a_job_and_reads_its_events(client: Kloakd) -> None:
+    respx.post(f"{TEST_BASE_URL}{ORG_PREFIX}/evadr/fetch/async").mock(return_value=Response(202, json={"job_id": "j1", "status": "pending", "message": ""}))
+    events = respx.get(f"{TEST_BASE_URL}{ORG_PREFIX}/evadr/jobs/j1/events").mock(
+        return_value=Response(200, text=_sse({"event_type": "TIER_STARTED", "tier": 1}), headers={"content-type": "text/event-stream"})
+    )
+    out = list(client.evadr.fetch_stream("https://example.com"))
+    assert [e.type for e in out] == ["TIER_STARTED"]
+    assert out[0].tier == 1
+    assert events.calls.last.request.headers["authorization"].startswith("Bearer sk-")
+
+
+@respx.mock
+def test_webgrph_crawl_stream_starts_a_crawl_and_reads_its_events(client: Kloakd) -> None:
+    respx.post(f"{TEST_BASE_URL}{ORG_PREFIX}/webgrph/crawl").mock(return_value=Response(202, json={"crawl_id": "c1"}))
+    events = respx.get(f"{TEST_BASE_URL}{ORG_PREFIX}/webgrph/crawl/c1/events").mock(
+        return_value=Response(200, text=_sse({"event_type": "PAGE_FOUND", "url": "https://example.com/a", "depth": 1}), headers={"content-type": "text/event-stream"})
+    )
+    out = list(client.webgrph.crawl_stream("https://example.com", max_depth=2))
+    assert [(e.type, e.url, e.depth) for e in out] == [("PAGE_FOUND", "https://example.com/a", 1)]
+    # The key goes in the Authorization header, never in the URL.
+    request = events.calls.last.request
+    assert "token" not in request.url.params and request.headers["authorization"].startswith("Bearer ")
+
+
+@respx.mock
+async def test_async_crawl_stream_reads_events() -> None:
+    respx.post(f"{TEST_BASE_URL}{ORG_PREFIX}/webgrph/crawl").mock(return_value=Response(202, json={"crawl_id": "c2"}))
+    respx.get(f"{TEST_BASE_URL}{ORG_PREFIX}/webgrph/crawl/c2/events").mock(
+        return_value=Response(200, text=_sse({"event_type": "CRAWL_COMPLETE"}), headers={"content-type": "text/event-stream"})
+    )
+    client = AsyncKloakd(api_key="k", organization_id=TEST_ORG_ID, base_url=TEST_BASE_URL)
+    out = [e async for e in client.webgrph.crawl_stream("https://example.com")]
+    assert [e.type for e in out] == ["CRAWL_COMPLETE"]

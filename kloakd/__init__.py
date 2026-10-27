@@ -29,30 +29,31 @@ from kloakd._client import AsyncKloakd, Kloakd
 from kloakd.errors import (
     ApiError,
     AuthenticationError,
+    BillingUnavailableError,
+    JobFailedError,
+    JobTimeoutError,
     KloakdError,
     NotEntitledError,
+    PaymentRequiredError,
+    QuotaExceededError,
     RateLimitError,
     UpstreamError,
 )
 from kloakd.models import (
     AnalyzeResult,
-    ApiEndpoint,
     ChatEvent,
     ChatTurn,
     CrawlEvent,
     CrawlPage,
     CrawlProgressEvent,
     CrawlResult,
-    DeduplicationResult,
-    DiscoverEvent,
-    DiscoverResult,
+    DuplicateCheckResult,
     ExtractionResult,
     FetchEvent,
     FetchResult,
-    FetchyrResult,
     FormDetectionResult,
+    MfaChallenge,
     MfaDetectionResult,
-    MfaResult,
     NexusAnalyzeResult,
     NexusExecuteResult,
     NexusKnowledgeResult,
@@ -66,7 +67,7 @@ from kloakd.models import (
     WorkflowResult,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __all__ = [
     # Clients
     "Kloakd",
@@ -78,6 +79,11 @@ __all__ = [
     "RateLimitError",
     "UpstreamError",
     "ApiError",
+    "PaymentRequiredError",
+    "QuotaExceededError",
+    "BillingUnavailableError",
+    "JobFailedError",
+    "JobTimeoutError",
     # Evadr models
     "FetchResult",
     "FetchEvent",
@@ -90,10 +96,6 @@ __all__ = [
     "CrawlPage",
     "SiteCrawlResult",
     "CrawlProgressEvent",
-    # Skanyr models
-    "DiscoverResult",
-    "DiscoverEvent",
-    "ApiEndpoint",
     # Nexus models
     "NexusAnalyzeResult",
     "NexusSynthesisResult",
@@ -106,13 +108,12 @@ __all__ = [
     "ChatTurn",
     # Fetchyr models
     "SessionResult",
-    "FetchyrResult",
     "WorkflowResult",
     "WorkflowExecutionResult",
     "FormDetectionResult",
     "MfaDetectionResult",
-    "MfaResult",
-    "DeduplicationResult",
+    "MfaChallenge",
+    "DuplicateCheckResult",
     # Kolektr models
     "ExtractionResult",
 ]

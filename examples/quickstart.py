@@ -51,13 +51,10 @@ while True:
 
 print(f"  artifact={crawl.artifact_id}")
 
-# ── Step 3: API discovery ──────────────────────────────────────────────────────
-print("Discovering APIs ...")
-discovery = client.skanyr.discover(
-    TARGET,
-    site_hierarchy_artifact_id=crawl.artifact_id,  # reuse — skip Phase 1 crawl
-)
-print(f"  endpoints_found={discovery.total_endpoints}")
+# ── Step 3: Store the site ─────────────────────────────────────────────────────
+print("Storing the site ...")
+site = client.skanyr.site_from_crawl(crawl.crawl_id)  # reuse the crawl
+print(f"  site={site.get('id')}")
 
 # ── Step 4: Extract structured data ───────────────────────────────────────────
 print("Extracting book data ...")
@@ -79,5 +76,5 @@ for book in data.records[:3]:
 
 # ── Bonus: Deduplication ───────────────────────────────────────────────────────
 if data.records:
-    dedup = client.fetchyr.check_duplicates(data.records, domain=TARGET)
-    print(f"\nDeduplication: {dedup.duplicate_count} duplicates removed, {len(dedup.unique_records)} unique")
+    seen = client.fetchyr.check_duplicate(TARGET)
+    print(f"\nAlready seen: {seen.is_duplicate}")

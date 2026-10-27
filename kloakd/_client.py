@@ -19,7 +19,7 @@ Both expose identical namespace APIs::
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, AsyncIterator, Dict, Iterator, Optional
 
 from kloakd._http import _AsyncHttpTransport, _HttpTransport
 from kloakd.models import CrawlPage, CrawlProgressEvent, SiteCrawlResult
@@ -398,9 +398,8 @@ class AsyncKloakd:
             print(data.records[:3])
 
             # SSE stream
-            async with client.webgrph.crawl_stream("https://books.toscrape.com") as events:
-                async for event in events:
-                    print(event.type, event.url)
+            async for event in client.webgrph.crawl_stream("https://books.toscrape.com"):
+                print(event.type, event.url)
     """
 
     def __init__(

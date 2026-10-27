@@ -1,182 +1,88 @@
-"""Tests for the Fetchyr namespace — including expanded methods."""
+"""Fetchyr: authenticated sessions, forms, MFA, workflows, deduplication."""
 
 from __future__ import annotations
 
-import pytest
+import json
+
 import respx
 
-from kloakd import (
-    DeduplicationResult,
-    FormDetectionResult,
-    Kloakd,
-    MfaDetectionResult,
-    MfaResult,
-    SessionResult,
-    WorkflowExecutionResult,
-    WorkflowResult,
-)
-from tests.conftest import TEST_BASE_URL, TEST_ORG_ID, ORG_PREFIX, mock_response
+from kloakd import DuplicateCheckResult, Kloakd, MfaChallenge, SessionResult
+from tests.conftest import ORG_PREFIX, TEST_BASE_URL, mock_response
+
+BASE = f"{TEST_BASE_URL}{ORG_PREFIX}"
 
 
-@pytest.fixture
-def client() -> Kloakd:
-    return Kloakd(api_key="sk-test-key", organization_id=TEST_ORG_ID, base_url=TEST_BASE_URL)
+def _sent(route: respx.Route) -> dict:
+    return json.loads(route.calls.last.request.content)
 
 
 @respx.mock
-def test_login_success(client: Kloakd) -> None:
-    respx.post(f"{TEST_BASE_URL}{ORG_PREFIX}/fetchyr/login").mock(
-        return_value=mock_response({
-            "success": True,
-            "session_id": "sess-001",
-            "url": "https://app.example.com/dashboard",
-            "artifact_id": "art-session-001",
-            "screenshot_url": None,
-            "error": None,
-        })
-    )
-    result = client.fetchyr.login(
-        url="https://app.example.com/login",
-        username_selector="#email",
-        password_selector="#password",
-        username="user@example.com",
-        password="s3cr3t",
-    )
+def test_authenticate_uses_stored_credentials(client: Kloakd) -> None:
+    route = respx.post(f"{BASE}/fetchyr/authenticate").mock(return_value=mock_response(
+        {"success": True, "session_id": "sess-1", "artifact_id": "art-1", "target_domain": "example.com", "auth_method": "form"}
+    ))
+    result = client.fetchyr.authenticate("my-login", "https://example.com/login")
     assert isinstance(result, SessionResult)
-    assert result.success is True
-    assert result.artifact_id == "art-session-001"
-    assert result.ok is True
+    assert _sent(route) == {"credential_name": "my-login", "target_url": "https://example.com/login"}
+    assert (result.ok, result.artifact_id, result.auth_method) == (True, "art-1", "form")
 
 
 @respx.mock
-def test_create_workflow(client: Kloakd) -> None:
-    respx.post(f"{TEST_BASE_URL}{ORG_PREFIX}/fetchyr/workflows").mock(
-        return_value=mock_response({
-            "workflow_id": "wf-001",
-            "name": "Login and scrape",
-            "steps": [{"action": "click", "selector": "#login"}],
-            "url": "https://app.example.com",
-            "created_at": "2026-04-09T00:00:00Z",
-            "error": None,
-        })
-    )
-    result = client.fetchyr.create_workflow(
-        name="Login and scrape",
-        steps=[{"action": "click", "selector": "#login"}],
-        url="https://app.example.com",
-    )
-    assert isinstance(result, WorkflowResult)
-    assert result.workflow_id == "wf-001"
-    assert result.ok is True
+def test_store_credentials_sends_the_api_fields(client: Kloakd) -> None:
+    route = respx.post(f"{BASE}/fetchyr/account/credentials").mock(return_value=mock_response({"name": "my-login"}))
+    client.fetchyr.store_credentials("my-login", username="u", password="p")
+    assert _sent(route) == {"name": "my-login", "username": "u", "password": "p"}
 
 
 @respx.mock
-def test_execute_workflow(client: Kloakd) -> None:
-    respx.post(f"{TEST_BASE_URL}{ORG_PREFIX}/fetchyr/workflows/wf-001/execute").mock(
-        return_value=mock_response({
-            "execution_id": "exec-001",
-            "workflow_id": "wf-001",
-            "status": "completed",
-            "started_at": "2026-04-09T00:00:00Z",
-            "completed_at": "2026-04-09T00:00:10Z",
-            "records": [{"data": "value"}],
-            "error": None,
-        })
-    )
-    result = client.fetchyr.execute_workflow("wf-001")
-    assert isinstance(result, WorkflowExecutionResult)
-    assert result.status == "completed"
-    assert result.ok is True
+def test_create_and_execute_workflow(client: Kloakd) -> None:
+    create = respx.post(f"{BASE}/fetchyr/workflows").mock(return_value=mock_response(
+        {"id": "wf-1", "name": "w", "steps": [{"a": 1}], "is_active": True, "created_at": "t"}
+    ))
+    wf = client.fetchyr.create_workflow("w", [{"a": 1}], description="d")
+    assert _sent(create) == {"name": "w", "steps": [{"a": 1}], "description": "d"}
+    assert wf.workflow_id == "wf-1"
+
+    run = respx.post(f"{BASE}/fetchyr/workflows/wf-1/execute").mock(return_value=mock_response(
+        {"execution_id": "ex-1", "workflow_id": "wf-1", "status": "completed", "result": {"n": 1}}
+    ))
+    ex = client.fetchyr.execute_workflow("wf-1", "https://example.com", session_artifact_id="s")
+    assert _sent(run) == {"target_url": "https://example.com", "session_artifact_id": "s"}
+    assert (ex.ok, ex.result) == (True, {"n": 1})
 
 
 @respx.mock
-def test_get_execution(client: Kloakd) -> None:
-    respx.get(f"{TEST_BASE_URL}{ORG_PREFIX}/fetchyr/workflows/wf-001/executions/exec-001").mock(
-        return_value=mock_response({
-            "execution_id": "exec-001",
-            "workflow_id": "wf-001",
-            "status": "running",
-            "started_at": "2026-04-09T00:00:00Z",
-            "completed_at": None,
-            "records": [],
-            "error": None,
-        })
-    )
-    result = client.fetchyr.get_execution("wf-001", "exec-001")
-    assert result.status == "running"
-    assert result.ok is False
+def test_detect_forms_at_form_detect(client: Kloakd) -> None:
+    respx.post(f"{BASE}/fetchyr/form/detect").mock(return_value=mock_response(
+        {"url": "u", "forms_found": 1, "login_form_detected": True, "fields": [{"name": "email"}]}
+    ))
+    r = client.fetchyr.detect_forms("u")
+    assert (r.total_forms, r.login_form_detected, len(r.forms)) == (1, True, 1)
 
 
 @respx.mock
-def test_detect_forms(client: Kloakd) -> None:
-    respx.post(f"{TEST_BASE_URL}{ORG_PREFIX}/fetchyr/detect-forms").mock(
-        return_value=mock_response({
-            "forms": [
-                {"selector": "form#login", "fields": ["#email", "#password"], "action": "/login", "method": "POST", "confidence": 0.98}
-            ],
-            "total_forms": 1,
-            "error": None,
-        })
-    )
-    result = client.fetchyr.detect_forms("https://example.com/login")
-    assert isinstance(result, FormDetectionResult)
-    assert result.total_forms == 1
-    assert result.forms[0]["confidence"] == 0.98
+def test_detect_mfa_and_resolve_the_challenge(client: Kloakd) -> None:
+    respx.post(f"{BASE}/fetchyr/mfa/detect").mock(return_value=mock_response(
+        {"mfa_detected": True, "mfa_type": "totp", "challenge_id": "ch-1", "message": "enter code"}
+    ))
+    d = client.fetchyr.detect_mfa("u")
+    assert (d.mfa_detected, d.challenge_id, d.message) == (True, "ch-1", "enter code")
+
+    resolve = respx.post(f"{BASE}/fetchyr/mfa-queue/ch-1/resolve").mock(return_value=mock_response(
+        {"id": "ch-1", "status": "resolved", "mfa_type": "totp"}
+    ))
+    c = client.fetchyr.submit_mfa("ch-1", "123456")
+    assert isinstance(c, MfaChallenge)
+    assert _sent(resolve) == {"resolution": "123456"}
+    assert c.status == "resolved"
 
 
 @respx.mock
-def test_detect_mfa(client: Kloakd) -> None:
-    respx.post(f"{TEST_BASE_URL}{ORG_PREFIX}/fetchyr/detect-mfa").mock(
-        return_value=mock_response({
-            "mfa_detected": True,
-            "challenge_id": "challenge-001",
-            "mfa_type": "totp",
-            "error": None,
-        })
-    )
-    result = client.fetchyr.detect_mfa("https://app.example.com/mfa")
-    assert isinstance(result, MfaDetectionResult)
-    assert result.mfa_detected is True
-    assert result.mfa_type == "totp"
-    assert result.challenge_id == "challenge-001"
-
-
-@respx.mock
-def test_submit_mfa(client: Kloakd) -> None:
-    respx.post(f"{TEST_BASE_URL}{ORG_PREFIX}/fetchyr/submit-mfa").mock(
-        return_value=mock_response({
-            "success": True,
-            "session_artifact_id": "art-session-002",
-            "error": None,
-        })
-    )
-    result = client.fetchyr.submit_mfa("challenge-001", "123456")
-    assert isinstance(result, MfaResult)
-    assert result.success is True
-    assert result.session_artifact_id == "art-session-002"
-
-
-@respx.mock
-def test_check_duplicates(client: Kloakd) -> None:
-    records = [
-        {"title": "Book A", "price": "$10"},
-        {"title": "Book A", "price": "$10"},
-        {"title": "Book B", "price": "$15"},
-    ]
-    respx.post(f"{TEST_BASE_URL}{ORG_PREFIX}/fetchyr/deduplication/check").mock(
-        return_value=mock_response({
-            "unique_records": [
-                {"title": "Book A", "price": "$10"},
-                {"title": "Book B", "price": "$15"},
-            ],
-            "duplicate_count": 1,
-            "total_input": 3,
-            "error": None,
-        })
-    )
-    result = client.fetchyr.check_duplicates(records, domain="example.com")
-    assert isinstance(result, DeduplicationResult)
-    assert len(result.unique_records) == 2
-    assert result.duplicate_count == 1
-    assert result.total_input == 3
-    assert result.ok is True
+def test_check_one_url_for_duplicates(client: Kloakd) -> None:
+    route = respx.post(f"{BASE}/fetchyr/deduplication/check").mock(return_value=mock_response(
+        {"is_duplicate": True, "original_url": "https://e.com/a", "similarity_score": 1.0, "match_type": "exact"}
+    ))
+    r = client.fetchyr.check_duplicate("https://e.com/a?x", session_id="ds-1")
+    assert isinstance(r, DuplicateCheckResult)
+    assert _sent(route) == {"url": "https://e.com/a?x", "session_id": "ds-1"}
+    assert (r.is_duplicate, r.match_type) == (True, "exact")

@@ -6,12 +6,9 @@ Uses respx to mock httpx at the transport layer — no real network calls.
 
 from __future__ import annotations
 
-import json
 from typing import Any, Dict
-from unittest.mock import MagicMock
 
 import pytest
-import respx
 from httpx import Response
 
 from kloakd import Kloakd

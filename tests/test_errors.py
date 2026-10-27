@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import pytest
-import respx
-from httpx import Response
 
 from kloakd import (
     ApiError,
@@ -16,7 +14,7 @@ from kloakd import (
     UpstreamError,
 )
 from kloakd._http import _HttpTransport
-from tests.conftest import TEST_BASE_URL, TEST_ORG_ID, ORG_PREFIX
+from tests.conftest import TEST_BASE_URL, TEST_ORG_ID
 
 
 @pytest.fixture
