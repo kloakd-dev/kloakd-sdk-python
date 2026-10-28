@@ -1,4 +1,30 @@
-# Routes the SDK calls (0.3.0)
+# Routes the SDK calls (0.4.0)
+
+## Changed in 0.4.0
+
+Checked against kobe-scraper: the hand-off decorator `@hands_off_after_limit`
+(`kernel/sync_handoff.py`, on main since 5bc47e8d) and the route removals of
+branch `fix/stubs-and-knowledge` (d7d25134, 00ee9f34). The route list in
+`tests/fixtures/routes.tsv` was edited to match (rows removed, the poll route
+added), not regenerated.
+
+| Method | Path | 0.4.0 |
+|---|---|---|
+| POST | kolektr/extract, fetchyr/authenticate, fetchyr/form/detect, fetchyr/form/fill, fetchyr/mfa/detect, nexus/analyze, nexus/synthesize, nexus/execute | a 202 hand-off is followed to the result |
+| GET | handoff/{job_id} | the poll the hand-off routes name in `poll_url` (added to the route list) |
+| POST | evadr/fetch | the 202 is followed through its own `poll_url` (evadr/jobs/{id}), with the same follower |
+| * | nexus/recommendations/... (13 routes) | removed from the API and the SDK (invented results, GAP-API-3) |
+| POST | kolektr/jobs | removed (`create_job`; GAP-API-2). GET kolektr/jobs and jobs/{id} stay |
+| GET | kolektr/jobs/{id}/progress[/summary, /events, /latest] | removed (`get_job_progress*`) |
+| GET | kolektr/progress/phases[/{name}[/steps]], progress/summary | removed (`list_progress_phases`, `get_progress_phase`, `get_progress_phase_steps`, `get_progress_summary`) |
+| GET | kolektr/pipeline/{id}/stream, /events | removed (`get_pipeline_stream`, `get_pipeline_events`) |
+| GET | webgrph/analytics/job-trends, error-summary | removed (`get_job_trends`, `get_error_summary`) |
+| GET | webgrph/analytics/... (the other five) | not called: the dashboard's sub-router, not part of the public API (`get_dashboard_summary`, `get_discovery_patterns`, `get_efficiency_metrics`, `get_site_mapping_trends`, `get_user_behavior_insights` removed) |
+| GET | evadr/profiles | removed (`list_profiles`). GET evadr/vendors stays |
+| * | recommendations/... (standalone router) | dropped from the route list: not mounted (`api/app.py`, GAP-SEC-6) |
+| POST | nexus/execute | response read for `execution_result_id` |
+
+# Routes the SDK called in 0.3.0
 
 Checked against the API's route list (`tests/fixtures/routes.tsv`, generated
 from kobe-scraper 4fb33ea4 with the module routers mounted as

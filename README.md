@@ -120,12 +120,25 @@ except KloakdError as e:
 | `RateLimitError` | 429 | Request rate exceeded (has `retry_after` seconds; retried) |
 | `UpstreamError` | 502 | Target site unreachable |
 | `BillingUnavailableError` | 503 | Usage could not be checked; retried after `retry_after` |
-| `JobFailedError` / `JobTimeoutError` | — | A fetch job or crawl failed, or was still running when the wait ran out |
+| `JobFailedError` / `JobTimeoutError` | — | A handed-off request, fetch job or crawl failed (or expired), or was still running when the wait ran out |
 | `ApiError` | 4xx/5xx | Any other API error |
 
-**Long fetches:** the API answers a synchronous fetch within about 85
-seconds; one still running then continues as a job (HTTP 202).
-`evadr.fetch` follows it to its result (`poll_interval`, `poll_timeout`).
+**Long requests:** the API answers within about 85 seconds (it sits behind
+Cloudflare, which closes requests at 100 s). A request still running then
+continues as a job: the API answers HTTP 202 with a `poll_url`. The SDK
+follows it and returns the same typed result as a direct answer. This
+applies to `evadr.fetch`, `kolektr.page` / `page_all`,
+`fetchyr.authenticate`, `detect_forms`, `fill_form`, `detect_mfa` and
+`nexus.analyze`, `synthesize` and `execute`. The first poll is after
+`poll_interval` seconds (default 3), each later wait half as long again up
+to 15 s, for at most `poll_timeout` seconds (default 900); set both on the
+client (`Kloakd(..., poll_interval=, poll_timeout=)`), or per call on
+`evadr.fetch`. A failed job, or one whose result has expired (an hour after
+it ends), raises `JobFailedError`; one still running at the timeout raises
+`JobTimeoutError` with its `job_id`.
+
+**Nexus knowledge:** `nexus.execute(...)` returns `execution_result_id`;
+pass it to `nexus.knowledge(result.execution_result_id)`.
 
 ## Crawls and pages
 

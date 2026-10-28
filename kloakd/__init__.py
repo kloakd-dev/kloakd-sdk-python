@@ -22,6 +22,10 @@ Quickstart::
     for record in data.records[:3]:
         print(record)
 
+Requests that run long (fetch, extract, the Fetchyr form and login calls,
+Nexus analyze/synthesize/execute) may be handed off by the API as a job
+(HTTP 202, after about 85 s); the SDK follows it and returns the same result.
+
 Documentation: https://docs.kloakd.dev/sdk/python
 """
 
@@ -67,7 +71,7 @@ from kloakd.models import (
     WorkflowResult,
 )
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 __all__ = [
     # Clients
     "Kloakd",

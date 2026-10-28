@@ -8,6 +8,31 @@ Format: [Semantic Versioning](https://semver.org/). Types: `Added`, `Changed`, `
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-10-28
+
+The API now hands off more requests as a job, and has deleted the routes
+that returned invented results. The removals are breaking, hence 0.4.0.
+`ROUTES.md` lists each route.
+
+### Removed (breaking)
+- Nexus recommendations, whose 13 `nexus/recommendations/*` routes are deleted: `recommend_analyze`, `list_recommendation_applications`, `get_cache_statistics`, `cleanup_cache`, `invalidate_cache`, `get_hooks_status`, `enable_hook`, `disable_hook`, `create_preference`, `get_preferences`, `update_preference`, `delete_preference`, `get_recommendation_statistics`.
+- `kolektr.create_job` (POST `kolektr/jobs` is deleted). `list_jobs` and `get_job` stay.
+- Kolektr job progress, progress phases and pipeline, whose routes are deleted: `get_job_progress`, `get_job_progress_events`, `get_job_progress_latest`, `get_job_progress_summary`, `list_progress_phases`, `get_progress_phase`, `get_progress_phase_steps`, `get_progress_summary`, `get_pipeline_events`, `get_pipeline_stream`.
+- `webgrph.get_job_trends` and `get_error_summary` (routes deleted).
+- The other `webgrph` analytics calls: `get_dashboard_summary`, `get_discovery_patterns`, `get_efficiency_metrics`, `get_site_mapping_trends`, `get_user_behavior_insights`. Their routes belong to the dashboard and are not part of the public API.
+- `evadr.list_profiles` (GET `evadr/profiles` is deleted). `list_vendors` stays.
+
+### Added
+- Hand-off following on every route that can answer 202: `kolektr.page` / `page_all`, `fetchyr.authenticate`, `detect_forms`, `fill_form`, `detect_mfa`, and `nexus.analyze`, `synthesize`, `execute`, as well as `evadr.fetch`. The SDK polls the `poll_url` the 202 gives and returns the same typed result as a direct answer.
+  - A failed job raises `JobFailedError`, and so does a job that is unknown or expired (poll 404).
+  - A job still running when the wait runs out raises `JobTimeoutError`.
+- `Kloakd(..., poll_interval=3.0, poll_timeout=900.0)` (and on `AsyncKloakd`): the first wait before polling and the overall limit. Each later wait is half as long again, up to 15 s.
+- `NexusExecuteResult.execution_result_id`: the id `nexus.knowledge()` takes.
+
+### Changed
+- `evadr.fetch` and `evadr.wait_for_job` use the same follower. They wait before the first poll and back off; before, they polled at a fixed interval and polled once straight away.
+- A `poll_url` given as a full URL is followed only when it is on the client's base URL, because the poll carries the API key.
+
 ## [0.3.0] — 2026-10-27
 
 Every request is now a live API route: `tests/test_contract.py` calls each

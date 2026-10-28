@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "kloakd-sdk"
-version = "0.3.0"
+version = "0.4.0"
 description = "The official Python SDK for the KLOAKD API"
 readme = "README.md"
 license = "MIT"
