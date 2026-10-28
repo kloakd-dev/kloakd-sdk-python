@@ -11,9 +11,11 @@ Usage::
     program = client.nexus.synthesize(page.url, page.html or "", goal="product names and prices")
     if client.nexus.verify(program.strategy_id).ok:
         result = client.nexus.execute(program.strategy_id, page.url)
+        if result.execution_result_id:
+            learned = client.nexus.knowledge(result.execution_result_id)
 
-The recommendation routes exist in the API but most do not work there yet
-(kobe-scraper GAP-SEC-6).
+``analyze``, ``synthesize`` and ``execute`` may be handed off as a job
+(HTTP 202, after about 85 s); the SDK follows it to the same result.
 """
 
 from __future__ import annotations
@@ -101,6 +103,7 @@ def _execution(
             artifact_id=_artifact_id(raw),
             duration_ms=int(raw.get("duration_ms") or 0),
             error=raw.get("error_message"),
+            execution_result_id=raw.get("execution_result_id"),
         )
 
     return parse
@@ -141,6 +144,7 @@ class NexusNamespace:
                 "nexus/analyze",
                 compact({"url": url, "html": html, "constraints": constraints}),
                 parse=_analysis(url),
+                follow=True,
             ),
         )
 
@@ -153,6 +157,7 @@ class NexusNamespace:
                 "nexus/synthesize",
                 {"url": url, "html": html, "goal": goal},
                 parse=_synthesis(url, goal),
+                follow=True,
             ),
         )
 
@@ -171,7 +176,11 @@ class NexusNamespace:
     def execute(
         self, strategy_id: str, url: str, options: Optional[Dict[str, Any]] = None
     ) -> NexusExecuteResult:
-        """Run a strategy against a URL."""
+        """Run a strategy against a URL.
+
+        The result's ``execution_result_id`` (when the API returns one) is
+        the id to pass to ``knowledge``.
+        """
         return run(
             self._t,
             _Op(
@@ -179,11 +188,16 @@ class NexusNamespace:
                 "nexus/execute",
                 compact({"strategy_id": strategy_id, "url": url, "options": options}),
                 parse=_execution(strategy_id, url),
+                follow=True,
             ),
         )
 
     def knowledge(self, execution_result_id: str) -> NexusKnowledgeResult:
-        """What an execution taught the knowledge store."""
+        """What an execution taught the knowledge store.
+
+        ``execution_result_id`` is the ``execution_result_id`` of the result
+        ``execute`` returned.
+        """
         return run(
             self._t,
             _Op(
@@ -218,78 +232,6 @@ class NexusNamespace:
             ),
         )
 
-    def recommend_analyze(
-        self, url: str, context: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
-        return run(
-            self._t,
-            _Op(
-                "POST",
-                "nexus/recommendations/analyze",
-                compact({"url": url, "context": context}),
-            ),
-        )
-
-    def list_recommendation_applications(self) -> Dict[str, Any]:
-        return run(self._t, _Op("GET", "nexus/recommendations/applications"))
-
-    def get_cache_statistics(self) -> Dict[str, Any]:
-        return run(self._t, _Op("GET", "nexus/recommendations/cache/statistics"))
-
-    def cleanup_cache(self) -> Dict[str, Any]:
-        return run(self._t, _Op("POST", "nexus/recommendations/cache/cleanup", {}))
-
-    def invalidate_cache(self) -> Dict[str, Any]:
-        return run(self._t, _Op("POST", "nexus/recommendations/cache/invalidate", {}))
-
-    def get_hooks_status(self) -> Dict[str, Any]:
-        return run(self._t, _Op("GET", "nexus/recommendations/hooks/status"))
-
-    def enable_hook(self, hook_name: str) -> Dict[str, Any]:
-        return run(
-            self._t, _Op("POST", f"nexus/recommendations/hooks/{hook_name}/enable", {})
-        )
-
-    def disable_hook(self, hook_name: str) -> Dict[str, Any]:
-        return run(
-            self._t, _Op("POST", f"nexus/recommendations/hooks/{hook_name}/disable", {})
-        )
-
-    def create_preference(
-        self, user_id: str, preference_type: str, value: Any
-    ) -> Dict[str, Any]:
-        return run(
-            self._t,
-            _Op(
-                "POST",
-                "nexus/recommendations/preferences",
-                {
-                    "user_id": user_id,
-                    "preference_type": preference_type,
-                    "value": value,
-                },
-            ),
-        )
-
-    def get_preferences(self, user_id: str) -> Dict[str, Any]:
-        return run(self._t, _Op("GET", f"nexus/recommendations/preferences/{user_id}"))
-
-    def update_preference(
-        self, preference_id: str, data: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        return run(
-            self._t,
-            _Op("PUT", f"nexus/recommendations/preferences/{preference_id}", data),
-        )
-
-    def delete_preference(self, preference_id: str) -> None:
-        run(
-            self._t, _Op("DELETE", f"nexus/recommendations/preferences/{preference_id}")
-        )
-
-    def get_recommendation_statistics(self) -> Dict[str, Any]:
-        return run(self._t, _Op("GET", "nexus/recommendations/statistics"))
-
 
 class AsyncNexusNamespace:
     """Async Nexus operations. Access via ``async_client.nexus``."""
@@ -308,6 +250,7 @@ class AsyncNexusNamespace:
                 "nexus/analyze",
                 compact({"url": url, "html": html, "constraints": constraints}),
                 parse=_analysis(url),
+                follow=True,
             ),
         )
 
@@ -320,6 +263,7 @@ class AsyncNexusNamespace:
                 "nexus/synthesize",
                 {"url": url, "html": html, "goal": goal},
                 parse=_synthesis(url, goal),
+                follow=True,
             ),
         )
 
@@ -346,11 +290,13 @@ class AsyncNexusNamespace:
                 "nexus/execute",
                 compact({"strategy_id": strategy_id, "url": url, "options": options}),
                 parse=_execution(strategy_id, url),
+                follow=True,
             ),
         )
 
     async def knowledge(self, execution_result_id: str) -> NexusKnowledgeResult:
-        """What an execution taught the knowledge store."""
+        """What an execution taught the knowledge store (the id is
+        ``execution_result_id`` of the result ``execute`` returned)."""
         return await arun(
             self._t,
             _Op(
@@ -385,80 +331,3 @@ class AsyncNexusNamespace:
             ),
         )
 
-    async def recommend_analyze(
-        self, url: str, context: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
-        return await arun(
-            self._t,
-            _Op(
-                "POST",
-                "nexus/recommendations/analyze",
-                compact({"url": url, "context": context}),
-            ),
-        )
-
-    async def list_recommendation_applications(self) -> Dict[str, Any]:
-        return await arun(self._t, _Op("GET", "nexus/recommendations/applications"))
-
-    async def get_cache_statistics(self) -> Dict[str, Any]:
-        return await arun(self._t, _Op("GET", "nexus/recommendations/cache/statistics"))
-
-    async def cleanup_cache(self) -> Dict[str, Any]:
-        return await arun(
-            self._t, _Op("POST", "nexus/recommendations/cache/cleanup", {})
-        )
-
-    async def invalidate_cache(self) -> Dict[str, Any]:
-        return await arun(
-            self._t, _Op("POST", "nexus/recommendations/cache/invalidate", {})
-        )
-
-    async def get_hooks_status(self) -> Dict[str, Any]:
-        return await arun(self._t, _Op("GET", "nexus/recommendations/hooks/status"))
-
-    async def enable_hook(self, hook_name: str) -> Dict[str, Any]:
-        return await arun(
-            self._t, _Op("POST", f"nexus/recommendations/hooks/{hook_name}/enable", {})
-        )
-
-    async def disable_hook(self, hook_name: str) -> Dict[str, Any]:
-        return await arun(
-            self._t, _Op("POST", f"nexus/recommendations/hooks/{hook_name}/disable", {})
-        )
-
-    async def create_preference(
-        self, user_id: str, preference_type: str, value: Any
-    ) -> Dict[str, Any]:
-        return await arun(
-            self._t,
-            _Op(
-                "POST",
-                "nexus/recommendations/preferences",
-                {
-                    "user_id": user_id,
-                    "preference_type": preference_type,
-                    "value": value,
-                },
-            ),
-        )
-
-    async def get_preferences(self, user_id: str) -> Dict[str, Any]:
-        return await arun(
-            self._t, _Op("GET", f"nexus/recommendations/preferences/{user_id}")
-        )
-
-    async def update_preference(
-        self, preference_id: str, data: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        return await arun(
-            self._t,
-            _Op("PUT", f"nexus/recommendations/preferences/{preference_id}", data),
-        )
-
-    async def delete_preference(self, preference_id: str) -> None:
-        await arun(
-            self._t, _Op("DELETE", f"nexus/recommendations/preferences/{preference_id}")
-        )
-
-    async def get_recommendation_statistics(self) -> Dict[str, Any]:
-        return await arun(self._t, _Op("GET", "nexus/recommendations/statistics"))

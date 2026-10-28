@@ -19,19 +19,14 @@ handed off as a job (HTTP 202); ``fetch`` follows it to its result.
 
 from __future__ import annotations
 
-import asyncio
-import time
 from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, Iterator, List, Optional
 
-from kloakd.errors import JobFailedError, JobTimeoutError
+from kloakd._handoff import DEFAULT_POLL_INTERVAL, DEFAULT_POLL_TIMEOUT, PollOptions
 from kloakd.models import AnalyzeResult, FetchEvent, FetchResult
 from kloakd.modules._ops import as_dict, as_list
 
 if TYPE_CHECKING:
     from kloakd._http import _AsyncHttpTransport, _HttpTransport
-
-DEFAULT_POLL_INTERVAL = 3.0
-DEFAULT_POLL_TIMEOUT = 15 * 60.0
 
 
 def _fetch_body(
@@ -68,25 +63,6 @@ def _parse_fetch(raw: Dict[str, Any], url: str) -> FetchResult:
         else raw.get("artifact_id"),
         error=raw.get("error"),
     )
-
-
-def _handed_off(raw: Any) -> bool:
-    """The 202 body of ``POST …/evadr/fetch`` when the fetch continues as a job."""
-    return (
-        isinstance(raw, dict)
-        and isinstance(raw.get("job_id"), str)
-        and "poll_url" in raw
-    )
-
-
-def _job_outcome(job: Dict[str, Any], job_id: str) -> Optional[Dict[str, Any]]:
-    """The job's result when completed; raises when failed; None while running."""
-    status = job.get("status")
-    if status == "completed":
-        return job.get("result") or {}
-    if status == "failed":
-        raise JobFailedError(str(job.get("error") or "Fetch job failed"), job_id)
-    return None
 
 
 def _analyze_body(
@@ -139,20 +115,18 @@ class EvadrNamespace:
         """
         Fetch a URL with automatic anti-bot bypass.
 
-        A fetch the API hands off as a job (202, after ~85 s) is polled every
-        ``poll_interval`` seconds until it completes, for at most
-        ``poll_timeout`` seconds (then JobTimeoutError). A failed job raises
-        JobFailedError.
+        A fetch the API hands off as a job (202, after ~85 s) is polled at
+        its ``poll_url`` until it completes, first after ``poll_interval``
+        seconds and then half as long again each time (up to 15 s), for at
+        most ``poll_timeout`` seconds (then JobTimeoutError). A failed or
+        expired job raises JobFailedError.
         """
-        raw = self._t.post(
+        raw = self._t.post_following(
             "evadr/fetch",
             _fetch_body(url, force_browser, use_proxy, session_artifact_id),
+            PollOptions(poll_interval, poll_timeout),
         )
-        if not _handed_off(raw):
-            return _parse_fetch(raw, url)
-        return _parse_fetch(
-            self.wait_for_job(raw["job_id"], poll_interval, poll_timeout), url
-        )
+        return _parse_fetch(raw, url)
 
     def fetch_async(
         self,
@@ -178,14 +152,11 @@ class EvadrNamespace:
         timeout: float = DEFAULT_POLL_TIMEOUT,
     ) -> Dict[str, Any]:
         """Poll a fetch job until it completes (its result) or fails (JobFailedError)."""
-        deadline = time.monotonic() + timeout
-        while True:
-            result = _job_outcome(self.get_job(job_id), job_id)
-            if result is not None:
-                return result
-            if time.monotonic() + poll_interval > deadline:
-                raise JobTimeoutError(f"Fetch job {job_id} still running", job_id)
-            time.sleep(poll_interval)
+        return self._t.follow(
+            job_id,
+            self._t._url(f"evadr/jobs/{job_id}"),
+            PollOptions(poll_interval, timeout),
+        )
 
     def fetch_stream(
         self, url: str, force_browser: bool = False
@@ -230,10 +201,6 @@ class EvadrNamespace:
         """All anti-bot vendors Evadr detects."""
         return as_list(self._t.get("evadr/vendors"))
 
-    def list_profiles(self) -> List[Dict[str, Any]]:
-        """Available browser fingerprint profiles."""
-        return as_list(self._t.get("evadr/profiles"))
-
     def list_proxies(self) -> List[Dict[str, Any]]:
         """Stored proxy configurations (names and masked URLs only)."""
         return as_list(self._t.get("evadr/proxies"))
@@ -263,15 +230,12 @@ class AsyncEvadrNamespace:
         poll_timeout: float = DEFAULT_POLL_TIMEOUT,
     ) -> FetchResult:
         """Async equivalent of EvadrNamespace.fetch (follows a 202 hand-off)."""
-        raw = await self._t.post(
+        raw = await self._t.post_following(
             "evadr/fetch",
             _fetch_body(url, force_browser, use_proxy, session_artifact_id),
+            PollOptions(poll_interval, poll_timeout),
         )
-        if not _handed_off(raw):
-            return _parse_fetch(raw, url)
-        return _parse_fetch(
-            await self.wait_for_job(raw["job_id"], poll_interval, poll_timeout), url
-        )
+        return _parse_fetch(raw, url)
 
     async def fetch_async(
         self,
@@ -297,14 +261,11 @@ class AsyncEvadrNamespace:
         timeout: float = DEFAULT_POLL_TIMEOUT,
     ) -> Dict[str, Any]:
         """Async equivalent of EvadrNamespace.wait_for_job."""
-        deadline = time.monotonic() + timeout
-        while True:
-            result = _job_outcome(await self.get_job(job_id), job_id)
-            if result is not None:
-                return result
-            if time.monotonic() + poll_interval > deadline:
-                raise JobTimeoutError(f"Fetch job {job_id} still running", job_id)
-            await asyncio.sleep(poll_interval)
+        return await self._t.follow(
+            job_id,
+            self._t._url(f"evadr/jobs/{job_id}"),
+            PollOptions(poll_interval, timeout),
+        )
 
     async def fetch_stream(
         self, url: str, force_browser: bool = False
@@ -349,9 +310,6 @@ class AsyncEvadrNamespace:
 
     async def list_vendors(self) -> List[Dict[str, Any]]:
         return as_list(await self._t.get("evadr/vendors"))
-
-    async def list_profiles(self) -> List[Dict[str, Any]]:
-        return as_list(await self._t.get("evadr/profiles"))
 
     async def list_proxies(self) -> List[Dict[str, Any]]:
         return as_list(await self._t.get("evadr/proxies"))

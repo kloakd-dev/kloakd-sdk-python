@@ -20,6 +20,7 @@ class Op(Generic[T]):
     body: Optional[Dict[str, Any]]
     params: Optional[Dict[str, Any]]
     parse: Callable[[Any], T]
+    follow: bool = False
 
 
 def as_dict(raw: Any) -> Dict[str, Any]:
@@ -38,6 +39,8 @@ def _Op(
     path: str,
     body: Optional[Dict[str, Any]] = ...,
     params: Optional[Dict[str, Any]] = ...,
+    *,
+    follow: bool = ...,
 ) -> Op[Dict[str, Any]]: ...
 
 
@@ -49,6 +52,7 @@ def _Op(
     params: Optional[Dict[str, Any]] = ...,
     *,
     parse: Callable[[Any], T],
+    follow: bool = ...,
 ) -> Op[T]: ...
 
 
@@ -59,8 +63,11 @@ def _Op(
     params: Optional[Dict[str, Any]] = None,
     *,
     parse: Optional[Callable[[Any], Any]] = None,
+    follow: bool = False,
 ) -> Op[Any]:
-    return Op(method, path, body, params, parse or as_dict)
+    """``follow``: the route may hand off as a job (202); follow it to the
+    result (kloakd/_handoff.py)."""
+    return Op(method, path, body, params, parse or as_dict, follow)
 
 
 def compact(values: Dict[str, Any]) -> Dict[str, Any]:
@@ -69,12 +76,16 @@ def compact(values: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def run(transport: Any, op: Op[T]) -> T:
+    if op.follow:
+        return op.parse(transport.post_following(op.path, op.body))
     return op.parse(
         transport.request(op.method, op.path, json_body=op.body, params=op.params)
     )
 
 
 async def arun(transport: Any, op: Op[T]) -> T:
+    if op.follow:
+        return op.parse(await transport.post_following(op.path, op.body))
     return op.parse(
         await transport.request(op.method, op.path, json_body=op.body, params=op.params)
     )

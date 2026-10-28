@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from typing import Any, AsyncIterator, Dict, Iterator, Optional
 
+from kloakd._handoff import DEFAULT_POLL_INTERVAL, DEFAULT_POLL_TIMEOUT, PollOptions
 from kloakd._http import _AsyncHttpTransport, _HttpTransport
 from kloakd.models import CrawlPage, CrawlProgressEvent, SiteCrawlResult
 from kloakd.modules.evadr import AsyncEvadrNamespace, EvadrNamespace
@@ -51,6 +52,11 @@ class Kloakd:
         timeout: HTTP timeout in seconds. Defaults to 60.0.
         max_retries: Max retry attempts on retryable errors. Defaults to 3.
         http_client: Optional pre-built httpx.Client (useful in tests).
+        poll_interval: Seconds before the first poll of a request the API
+            hands off as a job (HTTP 202); each later wait is half as long
+            again, up to 15 s. Defaults to 3.0.
+        poll_timeout: Seconds to follow a handed-off request before
+            JobTimeoutError. Defaults to 900 (15 minutes).
 
     Example::
 
@@ -78,6 +84,8 @@ class Kloakd:
         timeout: float = _DEFAULT_TIMEOUT,
         max_retries: int = _DEFAULT_MAX_RETRIES,
         http_client: Optional[Any] = None,
+        poll_interval: float = DEFAULT_POLL_INTERVAL,
+        poll_timeout: float = DEFAULT_POLL_TIMEOUT,
     ) -> None:
         if not api_key or not api_key.strip():
             raise ValueError("Kloakd: api_key is required")
@@ -91,6 +99,7 @@ class Kloakd:
             timeout=timeout,
             max_retries=max_retries,
             http_client=http_client,
+            poll=PollOptions(poll_interval, poll_timeout),
         )
 
         self.evadr = EvadrNamespace(self._transport)
@@ -379,6 +388,7 @@ class AsyncKloakd:
         timeout: HTTP timeout in seconds. Defaults to 60.0.
         max_retries: Max retry attempts on retryable errors. Defaults to 3.
         http_client: Optional pre-built httpx.AsyncClient (useful in tests).
+        poll_interval, poll_timeout: As for Kloakd.
 
     Example::
 
@@ -410,6 +420,8 @@ class AsyncKloakd:
         timeout: float = _DEFAULT_TIMEOUT,
         max_retries: int = _DEFAULT_MAX_RETRIES,
         http_client: Optional[Any] = None,
+        poll_interval: float = DEFAULT_POLL_INTERVAL,
+        poll_timeout: float = DEFAULT_POLL_TIMEOUT,
     ) -> None:
         if not api_key or not api_key.strip():
             raise ValueError("AsyncKloakd: api_key is required")
@@ -423,6 +435,7 @@ class AsyncKloakd:
             timeout=timeout,
             max_retries=max_retries,
             http_client=http_client,
+            poll=PollOptions(poll_interval, poll_timeout),
         )
 
         self.evadr = AsyncEvadrNamespace(self._transport)

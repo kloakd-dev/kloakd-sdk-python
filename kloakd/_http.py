@@ -20,10 +20,12 @@ import logging
 import time
 from typing import Any, AsyncIterator, Dict, Iterator, Mapping, Optional, Tuple
 
+from kloakd._handoff import PollOptions, expired, is_handoff, next_interval, outcome
 from kloakd.errors import (
     ApiError,
     AuthenticationError,
     BillingUnavailableError,
+    JobTimeoutError,
     KloakdError,
     NotEntitledError,
     PaymentRequiredError,
@@ -35,7 +37,7 @@ from kloakd.errors import (
 logger = logging.getLogger("kloakd.http")
 
 _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
-_SDK_VERSION = "0.3.0"
+_SDK_VERSION = "0.4.0"
 
 
 def _sdk_header(language: str = "python") -> str:
@@ -170,7 +172,9 @@ class _TransportBase:
         timeout: float,
         max_retries: int,
         http_client: Optional[Any],
+        poll: Optional[PollOptions] = None,
     ) -> None:
+        self._poll = poll or PollOptions()
         self._api_key = api_key
         self._organization_id = organization_id
         self._base_url = base_url.rstrip("/")
@@ -191,6 +195,18 @@ class _TransportBase:
 
     def _url(self, path: str) -> str:
         return f"{self._base_url}{self._org_prefix()}/{path.lstrip('/')}"
+
+    def _poll_url(self, poll_url: str) -> str:
+        """A 202's ``poll_url`` (a path from the API root) as a URL on the
+        base URL. A full URL is accepted only on the base URL itself, since
+        the poll carries the API key."""
+        if poll_url.startswith(("http://", "https://")):
+            if not poll_url.startswith(self._base_url + "/"):
+                raise KloakdError(
+                    f"Refusing to poll {poll_url}: not on {self._base_url}"
+                )
+            return poll_url
+        return f"{self._base_url}/{poll_url.lstrip('/')}"
 
     # Kept for callers of the 0.2 static API.
     _raise_for_status = staticmethod(raise_for_status)
@@ -213,8 +229,17 @@ class _HttpTransport(_TransportBase):
         params: Optional[Dict[str, Any]] = None,
     ) -> Any:
         """Execute a synchronous HTTP request with retry logic; returns parsed JSON."""
+        return self._send(method, self._url(path), json_body, params)[1]
+
+    def _send(
+        self,
+        method: str,
+        url: str,
+        json_body: Optional[Dict[str, Any]] = None,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[int, Any]:
+        """One request to ``url`` with retries; returns (status code, parsed JSON)."""
         httpx = _httpx()
-        url = self._url(path)
         headers = self._auth_headers()
         last_exc: Optional[KloakdError] = None
 
@@ -236,7 +261,7 @@ class _HttpTransport(_TransportBase):
                     body if isinstance(body, dict) else {},
                     response.headers,
                 )
-                return body
+                return response.status_code, body
             except KloakdError as exc:
                 if not _is_retryable(exc):
                     raise
@@ -257,6 +282,41 @@ class _HttpTransport(_TransportBase):
 
     def get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Any:
         return self.request("GET", path, params=params)
+
+    def post_following(
+        self,
+        path: str,
+        body: Optional[Dict[str, Any]] = None,
+        poll: Optional[PollOptions] = None,
+    ) -> Any:
+        """POST; a 202 hand-off is followed to the job's result (see _handoff)."""
+        status, raw = self._send("POST", self._url(path), json_body=body or {})
+        if not is_handoff(status, raw):
+            return raw
+        return self.follow(raw["job_id"], self._poll_url(raw["poll_url"]), poll)
+
+    def follow(
+        self, job_id: str, url: str, poll: Optional[PollOptions] = None
+    ) -> Dict[str, Any]:
+        """Poll a job's state at ``url`` until it completes; returns its result."""
+        poll = poll or self._poll
+        deadline = time.monotonic() + poll.timeout
+        interval = poll.interval
+        while True:
+            if time.monotonic() + interval > deadline:
+                raise JobTimeoutError(f"Job {job_id} still running", job_id)
+            time.sleep(interval)
+            try:
+                _, state = self._send("GET", url)
+            except KloakdError as exc:
+                gone = expired(exc, job_id)
+                if gone is not None:
+                    raise gone from exc
+                raise
+            result = outcome(state, job_id)
+            if result is not None:
+                return result
+            interval = next_interval(interval)
 
     def post(self, path: str, body: Optional[Dict[str, Any]] = None) -> Any:
         return self.request("POST", path, json_body=body or {})
@@ -317,10 +377,19 @@ class _AsyncHttpTransport(_TransportBase):
         params: Optional[Dict[str, Any]] = None,
     ) -> Any:
         """Execute an async HTTP request with retry logic; returns parsed JSON."""
+        return (await self._send(method, self._url(path), json_body, params))[1]
+
+    async def _send(
+        self,
+        method: str,
+        url: str,
+        json_body: Optional[Dict[str, Any]] = None,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[int, Any]:
+        """One request to ``url`` with retries; returns (status code, parsed JSON)."""
         import asyncio
 
         httpx = _httpx()
-        url = self._url(path)
         headers = self._auth_headers()
         last_exc: Optional[KloakdError] = None
 
@@ -342,7 +411,7 @@ class _AsyncHttpTransport(_TransportBase):
                     body if isinstance(body, dict) else {},
                     response.headers,
                 )
-                return body
+                return response.status_code, body
             except KloakdError as exc:
                 if not _is_retryable(exc):
                     raise
@@ -363,6 +432,43 @@ class _AsyncHttpTransport(_TransportBase):
 
     async def get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Any:
         return await self.request("GET", path, params=params)
+
+    async def post_following(
+        self,
+        path: str,
+        body: Optional[Dict[str, Any]] = None,
+        poll: Optional[PollOptions] = None,
+    ) -> Any:
+        """Async equivalent of _HttpTransport.post_following."""
+        status, raw = await self._send("POST", self._url(path), json_body=body or {})
+        if not is_handoff(status, raw):
+            return raw
+        return await self.follow(raw["job_id"], self._poll_url(raw["poll_url"]), poll)
+
+    async def follow(
+        self, job_id: str, url: str, poll: Optional[PollOptions] = None
+    ) -> Dict[str, Any]:
+        """Async equivalent of _HttpTransport.follow."""
+        import asyncio
+
+        poll = poll or self._poll
+        deadline = time.monotonic() + poll.timeout
+        interval = poll.interval
+        while True:
+            if time.monotonic() + interval > deadline:
+                raise JobTimeoutError(f"Job {job_id} still running", job_id)
+            await asyncio.sleep(interval)
+            try:
+                _, state = await self._send("GET", url)
+            except KloakdError as exc:
+                gone = expired(exc, job_id)
+                if gone is not None:
+                    raise gone from exc
+                raise
+            result = outcome(state, job_id)
+            if result is not None:
+                return result
+            interval = next_interval(interval)
 
     async def post(self, path: str, body: Optional[Dict[str, Any]] = None) -> Any:
         return await self.request("POST", path, json_body=body or {})

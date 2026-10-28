@@ -347,29 +347,6 @@ class WebgrphNamespace:
             ),
         )
 
-    # ── Analytics ─────────────────────────────────────────────────────────
-
-    def get_dashboard_summary(self) -> Dict[str, Any]:
-        return run(self._t, _Op("GET", "webgrph/analytics/dashboard/summary"))
-
-    def get_error_summary(self) -> Dict[str, Any]:
-        return run(self._t, _Op("GET", "webgrph/analytics/error-summary"))
-
-    def get_job_trends(self) -> Dict[str, Any]:
-        return run(self._t, _Op("GET", "webgrph/analytics/job-trends"))
-
-    def get_discovery_patterns(self) -> Dict[str, Any]:
-        return run(self._t, _Op("GET", "webgrph/analytics/content/discovery-patterns"))
-
-    def get_efficiency_metrics(self) -> Dict[str, Any]:
-        return run(self._t, _Op("GET", "webgrph/analytics/scraping/efficiency-metrics"))
-
-    def get_site_mapping_trends(self) -> Dict[str, Any]:
-        return run(self._t, _Op("GET", "webgrph/analytics/site-maps/trends"))
-
-    def get_user_behavior_insights(self) -> Dict[str, Any]:
-        return run(self._t, _Op("GET", "webgrph/analytics/users/behavior-insights"))
-
 
 class AsyncWebgrphNamespace:
     """Async Webgrph operations. Access via ``async_client.webgrph``."""
@@ -581,31 +558,4 @@ class AsyncWebgrphNamespace:
             _Op(
                 "PATCH", f"webgrph/sessions/{session_id}/job", params={"job_id": job_id}
             ),
-        )
-
-    async def get_dashboard_summary(self) -> Dict[str, Any]:
-        return await arun(self._t, _Op("GET", "webgrph/analytics/dashboard/summary"))
-
-    async def get_error_summary(self) -> Dict[str, Any]:
-        return await arun(self._t, _Op("GET", "webgrph/analytics/error-summary"))
-
-    async def get_job_trends(self) -> Dict[str, Any]:
-        return await arun(self._t, _Op("GET", "webgrph/analytics/job-trends"))
-
-    async def get_discovery_patterns(self) -> Dict[str, Any]:
-        return await arun(
-            self._t, _Op("GET", "webgrph/analytics/content/discovery-patterns")
-        )
-
-    async def get_efficiency_metrics(self) -> Dict[str, Any]:
-        return await arun(
-            self._t, _Op("GET", "webgrph/analytics/scraping/efficiency-metrics")
-        )
-
-    async def get_site_mapping_trends(self) -> Dict[str, Any]:
-        return await arun(self._t, _Op("GET", "webgrph/analytics/site-maps/trends"))
-
-    async def get_user_behavior_insights(self) -> Dict[str, Any]:
-        return await arun(
-            self._t, _Op("GET", "webgrph/analytics/users/behavior-insights")
         )

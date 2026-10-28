@@ -19,6 +19,9 @@ Usage::
         "https://protected.example.com",
         fetch_artifact_id=fetch.artifact_id,
     )
+
+An extraction still running after about 85 s is handed off as a job
+(HTTP 202); ``page`` follows it to the same result.
 """
 
 from __future__ import annotations
@@ -119,7 +122,7 @@ class KolektrNamespace:
         if options:
             body["options"] = options
 
-        raw = self._t.post("kolektr/extract", body)
+        raw = self._t.post_following("kolektr/extract", body)
         return _parse_extraction(raw, url)
 
     def page_all(
@@ -202,10 +205,6 @@ class KolektrNamespace:
         """List extraction jobs."""
         return as_dict(self._t.get("kolektr/jobs"))
 
-    def create_job(self, config: Dict[str, Any]) -> Dict[str, Any]:
-        """Create an extraction job."""
-        return as_dict(self._t.post("kolektr/jobs", config))
-
     def get_job(self, job_id: str) -> Dict[str, Any]:
         """Get an extraction job by ID."""
         return as_dict(self._t.get(f"kolektr/jobs/{job_id}"))
@@ -213,50 +212,6 @@ class KolektrNamespace:
     def get_job_status(self, job_id: str) -> Dict[str, Any]:
         """Get extraction job status."""
         return as_dict(self._t.get(f"kolektr/extraction-jobs/{job_id}/status"))
-
-    def get_job_progress(self, job_id: str) -> Dict[str, Any]:
-        """Get job progress."""
-        return as_dict(self._t.get(f"kolektr/jobs/{job_id}/progress"))
-
-    def get_job_progress_events(self, job_id: str) -> Dict[str, Any]:
-        """Get job progress events."""
-        return as_dict(self._t.get(f"kolektr/jobs/{job_id}/progress/events"))
-
-    def get_job_progress_latest(self, job_id: str) -> Dict[str, Any]:
-        """Get latest progress event for a job."""
-        return as_dict(self._t.get(f"kolektr/jobs/{job_id}/progress/latest"))
-
-    def get_job_progress_summary(self, job_id: str) -> Dict[str, Any]:
-        """Get job progress summary."""
-        return as_dict(self._t.get(f"kolektr/jobs/{job_id}/progress/summary"))
-
-    # ── Pipeline ──────────────────────────────────────────────────────
-
-    def get_pipeline_events(self, pipeline_id: str) -> Dict[str, Any]:
-        """Get events for a pipeline run."""
-        return as_dict(self._t.get(f"kolektr/pipeline/{pipeline_id}/events"))
-
-    def get_pipeline_stream(self, pipeline_id: str) -> Dict[str, Any]:
-        """Stream pipeline data."""
-        return as_dict(self._t.get(f"kolektr/pipeline/{pipeline_id}/stream"))
-
-    # ── Progress tracking ─────────────────────────────────────────────
-
-    def list_progress_phases(self) -> Dict[str, Any]:
-        """List all progress phases."""
-        return as_dict(self._t.get("kolektr/progress/phases"))
-
-    def get_progress_phase(self, phase_name: str) -> Dict[str, Any]:
-        """Get info for a specific progress phase."""
-        return as_dict(self._t.get(f"kolektr/progress/phases/{phase_name}"))
-
-    def get_progress_phase_steps(self, phase_name: str) -> Dict[str, Any]:
-        """Get steps for a progress phase."""
-        return as_dict(self._t.get(f"kolektr/progress/phases/{phase_name}/steps"))
-
-    def get_progress_summary(self) -> Dict[str, Any]:
-        """Get overall progress summary."""
-        return as_dict(self._t.get("kolektr/progress/summary"))
 
     # ── Scraper config ────────────────────────────────────────────────
 
@@ -312,7 +267,7 @@ class AsyncKolektrNamespace:
         if options:
             body["options"] = options
 
-        raw = await self._t.post("kolektr/extract", body)
+        raw = await self._t.post_following("kolektr/extract", body)
         return _parse_extraction(raw, url)
 
     async def page_all(
@@ -380,10 +335,6 @@ class AsyncKolektrNamespace:
         """Async equivalent of KolektrNamespace.list_jobs."""
         return as_dict(await self._t.get("kolektr/jobs"))
 
-    async def create_job(self, config: Dict[str, Any]) -> Dict[str, Any]:
-        """Async equivalent of KolektrNamespace.create_job."""
-        return as_dict(await self._t.post("kolektr/jobs", config))
-
     async def get_job(self, job_id: str) -> Dict[str, Any]:
         """Async equivalent of KolektrNamespace.get_job."""
         return as_dict(await self._t.get(f"kolektr/jobs/{job_id}"))
@@ -391,46 +342,6 @@ class AsyncKolektrNamespace:
     async def get_job_status(self, job_id: str) -> Dict[str, Any]:
         """Async equivalent of KolektrNamespace.get_job_status."""
         return as_dict(await self._t.get(f"kolektr/extraction-jobs/{job_id}/status"))
-
-    async def get_job_progress(self, job_id: str) -> Dict[str, Any]:
-        """Async equivalent of KolektrNamespace.get_job_progress."""
-        return as_dict(await self._t.get(f"kolektr/jobs/{job_id}/progress"))
-
-    async def get_job_progress_events(self, job_id: str) -> Dict[str, Any]:
-        """Async equivalent of KolektrNamespace.get_job_progress_events."""
-        return as_dict(await self._t.get(f"kolektr/jobs/{job_id}/progress/events"))
-
-    async def get_job_progress_latest(self, job_id: str) -> Dict[str, Any]:
-        """Async equivalent of KolektrNamespace.get_job_progress_latest."""
-        return as_dict(await self._t.get(f"kolektr/jobs/{job_id}/progress/latest"))
-
-    async def get_job_progress_summary(self, job_id: str) -> Dict[str, Any]:
-        """Async equivalent of KolektrNamespace.get_job_progress_summary."""
-        return as_dict(await self._t.get(f"kolektr/jobs/{job_id}/progress/summary"))
-
-    async def get_pipeline_events(self, pipeline_id: str) -> Dict[str, Any]:
-        """Async equivalent of KolektrNamespace.get_pipeline_events."""
-        return as_dict(await self._t.get(f"kolektr/pipeline/{pipeline_id}/events"))
-
-    async def get_pipeline_stream(self, pipeline_id: str) -> Dict[str, Any]:
-        """Async equivalent of KolektrNamespace.get_pipeline_stream."""
-        return as_dict(await self._t.get(f"kolektr/pipeline/{pipeline_id}/stream"))
-
-    async def list_progress_phases(self) -> Dict[str, Any]:
-        """Async equivalent of KolektrNamespace.list_progress_phases."""
-        return as_dict(await self._t.get("kolektr/progress/phases"))
-
-    async def get_progress_phase(self, phase_name: str) -> Dict[str, Any]:
-        """Async equivalent of KolektrNamespace.get_progress_phase."""
-        return as_dict(await self._t.get(f"kolektr/progress/phases/{phase_name}"))
-
-    async def get_progress_phase_steps(self, phase_name: str) -> Dict[str, Any]:
-        """Async equivalent of KolektrNamespace.get_progress_phase_steps."""
-        return as_dict(await self._t.get(f"kolektr/progress/phases/{phase_name}/steps"))
-
-    async def get_progress_summary(self) -> Dict[str, Any]:
-        """Async equivalent of KolektrNamespace.get_progress_summary."""
-        return as_dict(await self._t.get("kolektr/progress/summary"))
 
     async def list_scrapers(self) -> Dict[str, Any]:
         """Async equivalent of KolektrNamespace.list_scrapers."""

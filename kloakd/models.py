@@ -233,6 +233,8 @@ class NexusExecuteResult:
     artifact_id: Optional[str] = None
     duration_ms: int = 0
     error: Optional[str] = None
+    # The id nexus.knowledge() takes for this execution (None if the API sent none).
+    execution_result_id: Optional[str] = None
 
     @property
     def ok(self) -> bool:

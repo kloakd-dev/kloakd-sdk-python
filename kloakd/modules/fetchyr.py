@@ -10,6 +10,10 @@ Usage::
     session = client.fetchyr.authenticate("acme", "https://acme.example/login")
     page = client.evadr.fetch("https://acme.example/account",
                               session_artifact_id=session.artifact_id)
+
+``authenticate``, ``detect_forms``, ``fill_form`` and ``detect_mfa`` may be
+handed off as a job (HTTP 202, after about 85 s); the SDK follows it to the
+same result.
 """
 
 from __future__ import annotations
@@ -129,6 +133,7 @@ def _authenticate(credential_name: str, target_url: str) -> "Op[SessionResult]":
         "fetchyr/authenticate",
         {"credential_name": credential_name, "target_url": target_url},
         parse=_session(target_url),
+        follow=True,
     )
 
 
@@ -365,6 +370,7 @@ class FetchyrNamespace:
                 "fetchyr/form/detect",
                 _url_body(url, session_artifact_id),
                 parse=_forms(url),
+                follow=True,
             ),
         )
 
@@ -386,6 +392,7 @@ class FetchyrNamespace:
                         "session_artifact_id": session_artifact_id,
                     }
                 ),
+                follow=True,
             ),
         )
 
@@ -399,6 +406,7 @@ class FetchyrNamespace:
                 "fetchyr/mfa/detect",
                 _url_body(url, session_artifact_id),
                 parse=_mfa,
+                follow=True,
             ),
         )
 
@@ -633,6 +641,7 @@ class AsyncFetchyrNamespace:
                 "fetchyr/form/detect",
                 _url_body(url, session_artifact_id),
                 parse=_forms(url),
+                follow=True,
             ),
         )
 
@@ -654,6 +663,7 @@ class AsyncFetchyrNamespace:
                         "session_artifact_id": session_artifact_id,
                     }
                 ),
+                follow=True,
             ),
         )
 
@@ -667,6 +677,7 @@ class AsyncFetchyrNamespace:
                 "fetchyr/mfa/detect",
                 _url_body(url, session_artifact_id),
                 parse=_mfa,
+                follow=True,
             ),
         )
 
