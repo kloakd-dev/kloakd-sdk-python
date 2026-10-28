@@ -8,6 +8,47 @@ Format: [Semantic Versioning](https://semver.org/). Types: `Added`, `Changed`, `
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-10-28
+
+Fixes from an audit against kobe-scraper e5f15f7d. Several are breaking,
+hence 0.5.0. `ROUTES.md` lists the calls whose request or response changed.
+
+### Changed (breaking)
+- `parlyr.chat` / `chat_stream` read the events the API sends (`{type, content, data, actions, timestamp}`, closed by `end`). `ChatEvent` is now `type, content, data, actions, timestamp` (`event` remains as a read-only alias of `type`). `ChatTurn` is now `session_id, response, intent, interpretation, results, errors, warnings, events` and `ok`; `confidence`, `tier`, `entities`, `requires_action` and `clarification_needed` are removed (the stream never carried them). `intent` is `interpretation.get("intent")`, which the API does not send today, so it is usually None. `error` events are collected in `errors`, not raised.
+- `nexus.reason(query_type, parameters)`: `parameters` is a list of strings (default `[]`).
+- `skanyr.update_site(site_id, policy)`: `policy` is a required string.
+- `skanyr.get_site_apis`, `get_site_resources`, `get_findings`, `get_technologies` and `list_resources` return lists.
+- `skanyr.export_site` returns the ZIP archive as `bytes`; `skanyr.get_extraction_text` returns `str`.
+- `fetchyr.create_multi_site_workflow(dependencies=...)` takes a list of `{dependent_site, dependency_site, dependency_type?}`.
+- `webgrph.list_sessions(active_only=True)` always sends `active_only`.
+- `FetchEvent` matches the API: `type, stage_id, status, message, progress_pct, metadata, error, sequence, job_id, tier_used, artifact_id` (`tier` and `vendor` are removed).
+- A 403 other than `not_entitled` / `tier_access_denied` raises `ForbiddenError`, not `NotEntitledError`. `NotEntitledError` is a subclass of `ForbiddenError`.
+- POST, PUT and PATCH are no longer retried on 5xx; network errors are retried only for GET, HEAD and DELETE.
+- The playground quota (429 with `retry_after` 0 and no `reset_at`) is no longer retried.
+- `crawl()` / `crawl_stream()` report the crawl's own `success` and `error`, and raise `PaymentRequiredError`, `QuotaExceededError`, `BillingUnavailableError`, `NotEntitledError`, `AuthenticationError` and `RateLimitError` instead of marking every page failed.
+
+### Added
+- `client.get_handoff(job_id)` and `client.wait_for_handoff(job_id, poll_interval, timeout)` (sync and async), to resume a request after `JobTimeoutError`.
+- `ConcurrencyLimitError` (409 `concurrent_limit`: `concurrent_limit`, `active_crawls`, `tier`) and `ForbiddenError`.
+- `code` on every error (the API's `detail.error`).
+- `NotEntitledError.feature`, `current_tier`, `required_tier` (`tier_access_denied`).
+- `RateLimitError.quota_exhausted`, `quota_used`, `quota_limit`, `upgrade_url`.
+- `FetchResult` and `ExtractionResult`: `auth_required`, `discovery_id`.
+- `CrawlEvent`: `status`, `message`, `error`, `sequence`.
+- Paging parameters: `kolektr.list_jobs(page, limit, status_filter)`, `list_scrapers(page, page_size, is_template)`, `list_content(page, page_size, search)`, `fetchyr.list_workflows(page, page_size)`; `endpoint_hash` on the kolektr api-data calls and `max_records` on `extract_all_api_data`.
+- Extraction schemas may be a list of fields; `crawl(extract_schema=...)` takes the same forms as `kolektr.page`.
+- `kloakd/py.typed` is shipped, so type checkers use the SDK's annotations.
+- A `User-Agent: kloakd-sdk-python/0.5.0` header.
+
+### Fixed
+- The default `timeout` is 100 s (was 60 s), above the API's 85 s synchronous wait, so a long request receives its 202 hand-off instead of a client timeout. It applies to each attempt.
+- 429 `rate_limited` is retried on any method after `Retry-After`, the body's `retry_after`, or until `reset_at`; 503 `billing_unavailable` is retried on any method.
+- A non-JSON response (a proxy error page, a text route) no longer raises `JSONDecodeError`; on an error its text is the message.
+- A 422's validation messages (`detail[]`) are kept in the message.
+- The `css:` shorthand prefix is removed only at the start of a selector.
+- Path segments are percent-encoded, including the api-data endpoint URL.
+- README and `examples/quickstart.py`: no fetch artifact passed as `session_artifact_id`, no polling after `webgrph.crawl()` (it already waits), no `completed_pages`, and `site_from_crawl` returns `site_id`. The GitHub link points to `kloakd-dev`.
+
 ## [0.4.0] — 2026-10-28
 
 The API now hands off more requests as a job, and has deleted the routes

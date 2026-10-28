@@ -5,8 +5,9 @@ Demonstrates the artifact chaining pattern: modules compose like Unix pipes.
 The output of one module (artifact_id) becomes the input to the next,
 eliminating redundant HTTP round-trips.
 
-Crawl is async (returns 202 immediately). Poll get_crawl_status() until
-complete, or use the async client's crawl_stream() for real-time SSE events.
+webgrph.crawl() starts the crawl and waits until it finishes (the API
+answers 202 and crawls in the background; the SDK polls for you). Use
+webgrph.crawl_stream() for its progress events instead.
 
 Run:
     pip install kloakd-sdk
@@ -14,10 +15,8 @@ Run:
 """
 
 import os
-import time
 
 from kloakd import Kloakd
-from kloakd.errors import KloakdError
 
 client = Kloakd(
     api_key=os.environ["KLOAKD_API_KEY"],
@@ -31,30 +30,17 @@ print(f"Fetching {TARGET} ...")
 fetch = client.evadr.fetch(TARGET)
 print(f"  tier_used={fetch.tier_used}  bypassed={fetch.anti_bot_bypassed}  artifact={fetch.artifact_id}")
 
-# ── Step 2: Site hierarchy (async — poll for completion) ──────────────────────
+# ── Step 2: Site hierarchy (waits until the crawl finishes) ──────────────────
 print("Crawling site hierarchy ...")
-crawl = client.webgrph.crawl(
-    TARGET,
-    max_depth=2,
-    max_pages=50,
-    session_artifact_id=fetch.artifact_id,  # reuse — no double-fetch
-)
-print(f"  crawl started: {crawl.crawl_id}")
-
-# Poll until the crawl completes
-while True:
-    status = client.webgrph.get_crawl_status(crawl.crawl_id)
-    print(f"  progress: {status.get('completed_pages', 0)}/{status.get('total_pages', 0)} pages")
-    if status.get("status") == "completed":
-        break
-    time.sleep(2)
-
-print(f"  artifact={crawl.artifact_id}")
+crawl = client.webgrph.crawl(TARGET, max_depth=2, max_pages=50)
+print(f"  crawl {crawl.crawl_id}: {crawl.status}, {crawl.total_pages} pages")
+if not crawl.ok:
+    raise SystemExit(f"  crawl failed: {crawl.error}")
 
 # ── Step 3: Store the site ─────────────────────────────────────────────────────
 print("Storing the site ...")
 site = client.skanyr.site_from_crawl(crawl.crawl_id)  # reuse the crawl
-print(f"  site={site.get('id')}")
+print(f"  site={site.get('site_id')}")
 
 # ── Step 4: Extract structured data ───────────────────────────────────────────
 print("Extracting book data ...")

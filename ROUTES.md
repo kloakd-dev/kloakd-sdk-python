@@ -1,4 +1,30 @@
-# Routes the SDK calls (0.4.0)
+# Routes the SDK calls (0.5.0)
+
+## Changed in 0.5.0
+
+Checked against kobe-scraper e5f15f7d. No route was added or removed; these
+calls changed what they send or how they read the answer. Every path
+segment is now percent-encoded (encodeURIComponent-style).
+
+| Method | Path | 0.5.0 |
+|---|---|---|
+| GET | handoff/{job_id} | now public: `client.get_handoff`, `client.wait_for_handoff` (`kernel/sync_handoff.py`) |
+| POST | parlyr/chat | events read as `{type, content, data, actions, timestamp}` up to `end` (`application/services/chat_orchestrator.py`) |
+| POST | nexus/reason | `parameters` is a list of strings (`modules/nexus/router.py` ReasonRequest) |
+| PATCH | skanyr/sites/{site_id} | `policy` is a string (`modules/skanyr/router.py` SiteUpdateRequest) |
+| GET | skanyr/sites/{id}/apis, /resources, /findings, /technologies, skanyr/resources | parsed as lists |
+| POST | skanyr/sites/{site_id}/export | returns the ZIP bytes |
+| GET | skanyr/extractions/{hash}/text | returns the text (the route answers text/plain) |
+| POST | fetchyr/multi-site-workflows | `dependencies` is a list (`modules/fetchyr/router.py` SiteDependencyModel) |
+| GET | kolektr/jobs | `page`, `limit`, `status_filter` |
+| GET | kolektr/scrapers | `page`, `page_size`, `is_template` |
+| GET | kolektr/content | `page`, `page_size`, `search` |
+| GET | fetchyr/workflows | `page`, `page_size` |
+| GET | kolektr/api-data/{api_endpoint:path}[/paginated] | `endpoint_hash`; the endpoint URL is one encoded segment |
+| POST | kolektr/api-data/{api_endpoint:path}/extract-all | `endpoint_hash`, `max_records` (query) |
+| GET | webgrph/sessions | `active_only` always sent (default true) |
+
+# Routes the SDK called in 0.4.0
 
 ## Changed in 0.4.0
 
