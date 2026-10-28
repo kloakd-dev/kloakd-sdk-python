@@ -19,7 +19,7 @@ import time
 from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, Iterator, List, Optional
 
 from kloakd.models import CrawlEvent, CrawlResult, PageNode
-from kloakd.modules._ops import Op, _Op, arun, as_list, compact, run
+from kloakd.modules._ops import Op, _Op, arun, as_list, compact, run, seg
 
 if TYPE_CHECKING:
     from kloakd._http import _AsyncHttpTransport, _HttpTransport
@@ -102,6 +102,10 @@ def _event(data: Dict[str, Any], crawl_id: str) -> CrawlEvent:
         sub_status=data.get("sub_status"),
         progress_pct=data.get("progress_pct"),
         metadata={"crawl_id": crawl_id, **(meta or data)},
+        status=data.get("status"),
+        message=data.get("message"),
+        error=data.get("error"),
+        sequence=data.get("sequence"),
     )
 
 
@@ -237,10 +241,10 @@ class WebgrphNamespace:
             yield _event(data, crawl_id)
 
     def get_crawl_status(self, crawl_id: str) -> Dict[str, Any]:
-        return run(self._t, _Op("GET", f"webgrph/crawl/{crawl_id}"))
+        return run(self._t, _Op("GET", f"webgrph/crawl/{seg(crawl_id)}"))
 
     def cancel_crawl(self, crawl_id: str) -> Dict[str, Any]:
-        return run(self._t, _Op("POST", f"webgrph/crawl/{crawl_id}/cancel", {}))
+        return run(self._t, _Op("POST", f"webgrph/crawl/{seg(crawl_id)}/cancel", {}))
 
     def crawl_events(
         self, crawl_id: str, last_sequence: Optional[int] = None
@@ -248,7 +252,7 @@ class WebgrphNamespace:
         """A crawl's progress events; ``last_sequence`` resumes after an event already seen."""
         params = {"last_sequence": last_sequence} if last_sequence is not None else None
         for _name, data in self._t.iter_sse(
-            "GET", f"webgrph/crawl/{crawl_id}/events", params=params
+            "GET", f"webgrph/crawl/{seg(crawl_id)}/events", params=params
         ):
             yield data
 
@@ -260,7 +264,7 @@ class WebgrphNamespace:
             self._t,
             _Op(
                 "GET",
-                f"webgrph/crawl/{crawl_id}/pages",
+                f"webgrph/crawl/{seg(crawl_id)}/pages",
                 params=_pages_params(cursor, limit),
             ),
         )
@@ -304,13 +308,13 @@ class WebgrphNamespace:
             self._t, _Op("GET", "webgrph/detected-apis", params={"page_url": page_url})
         )
 
-    def list_sessions(self, active_only: Optional[bool] = None) -> List[Dict[str, Any]]:
+    def list_sessions(self, active_only: bool = True) -> List[Dict[str, Any]]:
         return run(
             self._t,
             _Op(
                 "GET",
                 "webgrph/sessions",
-                params=compact({"active_only": active_only}),
+                params={"active_only": "true" if active_only else "false"},
                 parse=as_list,
             ),
         )
@@ -331,19 +335,19 @@ class WebgrphNamespace:
         )
 
     def get_session(self, session_id: str) -> Dict[str, Any]:
-        return run(self._t, _Op("GET", f"webgrph/sessions/{session_id}"))
+        return run(self._t, _Op("GET", f"webgrph/sessions/{seg(session_id)}"))
 
     def delete_session(self, session_id: str) -> None:
-        run(self._t, _Op("DELETE", f"webgrph/sessions/{session_id}"))
+        run(self._t, _Op("DELETE", f"webgrph/sessions/{seg(session_id)}"))
 
     def end_session(self, session_id: str) -> Dict[str, Any]:
-        return run(self._t, _Op("POST", f"webgrph/sessions/{session_id}/end", {}))
+        return run(self._t, _Op("POST", f"webgrph/sessions/{seg(session_id)}/end", {}))
 
     def update_session_job(self, session_id: str, job_id: str) -> Dict[str, Any]:
         return run(
             self._t,
             _Op(
-                "PATCH", f"webgrph/sessions/{session_id}/job", params={"job_id": job_id}
+                "PATCH", f"webgrph/sessions/{seg(session_id)}/job", params={"job_id": job_id}
             ),
         )
 
@@ -451,17 +455,17 @@ class AsyncWebgrphNamespace:
             yield _event(data, crawl_id)
 
     async def get_crawl_status(self, crawl_id: str) -> Dict[str, Any]:
-        return await arun(self._t, _Op("GET", f"webgrph/crawl/{crawl_id}"))
+        return await arun(self._t, _Op("GET", f"webgrph/crawl/{seg(crawl_id)}"))
 
     async def cancel_crawl(self, crawl_id: str) -> Dict[str, Any]:
-        return await arun(self._t, _Op("POST", f"webgrph/crawl/{crawl_id}/cancel", {}))
+        return await arun(self._t, _Op("POST", f"webgrph/crawl/{seg(crawl_id)}/cancel", {}))
 
     async def crawl_events(
         self, crawl_id: str, last_sequence: Optional[int] = None
     ) -> AsyncIterator[Dict[str, Any]]:
         params = {"last_sequence": last_sequence} if last_sequence is not None else None
         async for _name, data in self._t.aiter_sse(
-            "GET", f"webgrph/crawl/{crawl_id}/events", params=params
+            "GET", f"webgrph/crawl/{seg(crawl_id)}/events", params=params
         ):
             yield data
 
@@ -472,7 +476,7 @@ class AsyncWebgrphNamespace:
             self._t,
             _Op(
                 "GET",
-                f"webgrph/crawl/{crawl_id}/pages",
+                f"webgrph/crawl/{seg(crawl_id)}/pages",
                 params=_pages_params(cursor, limit),
             ),
         )
@@ -513,15 +517,13 @@ class AsyncWebgrphNamespace:
             self._t, _Op("GET", "webgrph/detected-apis", params={"page_url": page_url})
         )
 
-    async def list_sessions(
-        self, active_only: Optional[bool] = None
-    ) -> List[Dict[str, Any]]:
+    async def list_sessions(self, active_only: bool = True) -> List[Dict[str, Any]]:
         return await arun(
             self._t,
             _Op(
                 "GET",
                 "webgrph/sessions",
-                params=compact({"active_only": active_only}),
+                params={"active_only": "true" if active_only else "false"},
                 parse=as_list,
             ),
         )
@@ -542,20 +544,20 @@ class AsyncWebgrphNamespace:
         )
 
     async def get_session(self, session_id: str) -> Dict[str, Any]:
-        return await arun(self._t, _Op("GET", f"webgrph/sessions/{session_id}"))
+        return await arun(self._t, _Op("GET", f"webgrph/sessions/{seg(session_id)}"))
 
     async def delete_session(self, session_id: str) -> None:
-        await arun(self._t, _Op("DELETE", f"webgrph/sessions/{session_id}"))
+        await arun(self._t, _Op("DELETE", f"webgrph/sessions/{seg(session_id)}"))
 
     async def end_session(self, session_id: str) -> Dict[str, Any]:
         return await arun(
-            self._t, _Op("POST", f"webgrph/sessions/{session_id}/end", {})
+            self._t, _Op("POST", f"webgrph/sessions/{seg(session_id)}/end", {})
         )
 
     async def update_session_job(self, session_id: str, job_id: str) -> Dict[str, Any]:
         return await arun(
             self._t,
             _Op(
-                "PATCH", f"webgrph/sessions/{session_id}/job", params={"job_id": job_id}
+                "PATCH", f"webgrph/sessions/{seg(session_id)}/job", params={"job_id": job_id}
             ),
         )

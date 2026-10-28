@@ -29,7 +29,7 @@ from kloakd.models import (
     WorkflowExecutionResult,
     WorkflowResult,
 )
-from kloakd.modules._ops import Op, _Op, arun, as_list, compact, run
+from kloakd.modules._ops import Op, _Op, arun, as_list, compact, run, seg
 
 if TYPE_CHECKING:
     from kloakd._http import _AsyncHttpTransport, _HttpTransport
@@ -178,7 +178,7 @@ def _execute_workflow(
 ) -> "Op[WorkflowExecutionResult]":
     return _Op(
         "POST",
-        f"fetchyr/workflows/{workflow_id}/execute",
+        f"fetchyr/workflows/{seg(workflow_id)}/execute",
         compact(
             {
                 "target_url": target_url,
@@ -199,7 +199,7 @@ def _update_workflow(
 ) -> "Op[WorkflowResult]":
     return _Op(
         "PATCH",
-        f"fetchyr/workflows/{workflow_id}",
+        f"fetchyr/workflows/{seg(workflow_id)}",
         compact(
             {
                 "name": name,
@@ -216,7 +216,7 @@ def _create_multi_site(
     name: str,
     sites: List[Dict[str, Any]],
     description: Optional[str],
-    dependencies: Optional[Dict[str, Any]],
+    dependencies: Optional[List[Dict[str, Any]]],
     global_config: Optional[Dict[str, Any]],
 ) -> "Op[Dict[str, Any]]":
     return _Op(
@@ -231,6 +231,16 @@ def _create_multi_site(
                 "global_config": global_config,
             }
         ),
+    )
+
+
+def _list_workflows(
+    page: Optional[int], page_size: Optional[int]
+) -> "Op[Dict[str, Any]]":
+    return _Op(
+        "GET",
+        "fetchyr/workflows",
+        params=compact({"page": page, "page_size": page_size}) or None,
     )
 
 
@@ -262,13 +272,13 @@ class FetchyrNamespace:
         return run(self._t, _Op("GET", "fetchyr/account/credentials", parse=as_list))
 
     def delete_credentials(self, name: str) -> None:
-        run(self._t, _Op("DELETE", f"fetchyr/account/credentials/{name}"))
+        run(self._t, _Op("DELETE", f"fetchyr/account/credentials/{seg(name)}"))
 
     def list_sessions(self) -> List[Dict[str, Any]]:
         return run(self._t, _Op("GET", "fetchyr/sessions", parse=as_list))
 
     def invalidate_session(self, artifact_id: str) -> None:
-        run(self._t, _Op("DELETE", f"fetchyr/sessions/{artifact_id}"))
+        run(self._t, _Op("DELETE", f"fetchyr/sessions/{seg(artifact_id)}"))
 
     def terminate_session(self, artifact_id: str) -> None:
         """Alias of invalidate_session."""
@@ -302,7 +312,7 @@ class FetchyrNamespace:
             self._t,
             _Op(
                 "GET",
-                f"fetchyr/workflows/{workflow_id}/executions/{execution_id}",
+                f"fetchyr/workflows/{seg(workflow_id)}/executions/{seg(execution_id)}",
                 parse=_execution,
             ),
         )
@@ -315,18 +325,21 @@ class FetchyrNamespace:
             self._t,
             _Op(
                 "POST",
-                f"fetchyr/workflows/{workflow_id}/executions/{execution_id}/resume",
+                f"fetchyr/workflows/{seg(workflow_id)}/executions/{seg(execution_id)}/resume",
                 body or {},
                 parse=_execution,
             ),
         )
 
-    def list_workflows(self) -> Dict[str, Any]:
-        return run(self._t, _Op("GET", "fetchyr/workflows"))
+    def list_workflows(
+        self, page: Optional[int] = None, page_size: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """List RPA workflows (``page`` from 1, ``page_size`` default 20)."""
+        return run(self._t, _list_workflows(page, page_size))
 
     def get_workflow(self, workflow_id: str) -> WorkflowResult:
         return run(
-            self._t, _Op("GET", f"fetchyr/workflows/{workflow_id}", parse=_workflow)
+            self._t, _Op("GET", f"fetchyr/workflows/{seg(workflow_id)}", parse=_workflow)
         )
 
     def update_workflow(
@@ -342,19 +355,23 @@ class FetchyrNamespace:
         )
 
     def delete_workflow(self, workflow_id: str) -> None:
-        run(self._t, _Op("DELETE", f"fetchyr/workflows/{workflow_id}"))
+        run(self._t, _Op("DELETE", f"fetchyr/workflows/{seg(workflow_id)}"))
 
     def get_workflow_statistics(self, workflow_id: str) -> Dict[str, Any]:
-        return run(self._t, _Op("GET", f"fetchyr/workflows/{workflow_id}/statistics"))
+        return run(self._t, _Op("GET", f"fetchyr/workflows/{seg(workflow_id)}/statistics"))
 
     def create_multi_site_workflow(
         self,
         name: str,
         sites: List[Dict[str, Any]],
         description: Optional[str] = None,
-        dependencies: Optional[Dict[str, Any]] = None,
+        dependencies: Optional[List[Dict[str, Any]]] = None,
         global_config: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        """Create a multi-site workflow. ``dependencies`` is a list of
+        ``{"dependent_site", "dependency_site", "dependency_type"?,
+        "condition"?, "data_requirements"?, "timeout"?}``
+        (modules/fetchyr/router.py SiteDependencyModel)."""
         return run(
             self._t,
             _create_multi_site(name, sites, description, dependencies, global_config),
@@ -416,7 +433,7 @@ class FetchyrNamespace:
             self._t,
             _Op(
                 "POST",
-                f"fetchyr/mfa-queue/{challenge_id}/resolve",
+                f"fetchyr/mfa-queue/{seg(challenge_id)}/resolve",
                 {"resolution": resolution},
                 parse=_challenge,
             ),
@@ -428,11 +445,11 @@ class FetchyrNamespace:
     def get_mfa_challenge(self, challenge_id: str) -> MfaChallenge:
         return run(
             self._t,
-            _Op("GET", f"fetchyr/mfa/challenges/{challenge_id}", parse=_challenge),
+            _Op("GET", f"fetchyr/mfa/challenges/{seg(challenge_id)}", parse=_challenge),
         )
 
     def get_mfa_statistics(self, domain: str) -> Dict[str, Any]:
-        return run(self._t, _Op("GET", f"fetchyr/mfa/statistics/{domain}"))
+        return run(self._t, _Op("GET", f"fetchyr/mfa/statistics/{seg(domain)}"))
 
     def check_duplicate(
         self,
@@ -471,37 +488,37 @@ class FetchyrNamespace:
         )
 
     def get_dedup_session(self, session_id: str) -> Dict[str, Any]:
-        return run(self._t, _Op("GET", f"fetchyr/deduplication/sessions/{session_id}"))
+        return run(self._t, _Op("GET", f"fetchyr/deduplication/sessions/{seg(session_id)}"))
 
     def get_dedup_session_statistics(self, session_id: str) -> Dict[str, Any]:
         return run(
             self._t,
-            _Op("GET", f"fetchyr/deduplication/sessions/{session_id}/statistics"),
+            _Op("GET", f"fetchyr/deduplication/sessions/{seg(session_id)}/statistics"),
         )
 
     def get_dedup_domain_statistics(self, domain: str) -> Dict[str, Any]:
-        return run(self._t, _Op("GET", f"fetchyr/deduplication/statistics/{domain}"))
+        return run(self._t, _Op("GET", f"fetchyr/deduplication/statistics/{seg(domain)}"))
 
     def discover_auth_chain(self, body: Dict[str, Any]) -> Dict[str, Any]:
         """Start an auth-chain discovery (a login flow that may need user input)."""
         return run(self._t, _Op("POST", "fetchyr/auth-chain/discover", body))
 
     def get_auth_chain_status(self, discovery_id: str) -> Dict[str, Any]:
-        return run(self._t, _Op("GET", f"fetchyr/auth-chain/{discovery_id}/status"))
+        return run(self._t, _Op("GET", f"fetchyr/auth-chain/{seg(discovery_id)}/status"))
 
     def resume_auth_chain_credentials(
         self, discovery_id: str, body: Dict[str, Any]
     ) -> Dict[str, Any]:
         return run(
             self._t,
-            _Op("POST", f"fetchyr/auth-chain/{discovery_id}/resume-credentials", body),
+            _Op("POST", f"fetchyr/auth-chain/{seg(discovery_id)}/resume-credentials", body),
         )
 
     def resume_auth_chain_mfa(
         self, discovery_id: str, body: Dict[str, Any]
     ) -> Dict[str, Any]:
         return run(
-            self._t, _Op("POST", f"fetchyr/auth-chain/{discovery_id}/resume-mfa", body)
+            self._t, _Op("POST", f"fetchyr/auth-chain/{seg(discovery_id)}/resume-mfa", body)
         )
 
 
@@ -531,13 +548,13 @@ class AsyncFetchyrNamespace:
         )
 
     async def delete_credentials(self, name: str) -> None:
-        await arun(self._t, _Op("DELETE", f"fetchyr/account/credentials/{name}"))
+        await arun(self._t, _Op("DELETE", f"fetchyr/account/credentials/{seg(name)}"))
 
     async def list_sessions(self) -> List[Dict[str, Any]]:
         return await arun(self._t, _Op("GET", "fetchyr/sessions", parse=as_list))
 
     async def invalidate_session(self, artifact_id: str) -> None:
-        await arun(self._t, _Op("DELETE", f"fetchyr/sessions/{artifact_id}"))
+        await arun(self._t, _Op("DELETE", f"fetchyr/sessions/{seg(artifact_id)}"))
 
     async def terminate_session(self, artifact_id: str) -> None:
         await self.invalidate_session(artifact_id)
@@ -572,7 +589,7 @@ class AsyncFetchyrNamespace:
             self._t,
             _Op(
                 "GET",
-                f"fetchyr/workflows/{workflow_id}/executions/{execution_id}",
+                f"fetchyr/workflows/{seg(workflow_id)}/executions/{seg(execution_id)}",
                 parse=_execution,
             ),
         )
@@ -584,18 +601,21 @@ class AsyncFetchyrNamespace:
             self._t,
             _Op(
                 "POST",
-                f"fetchyr/workflows/{workflow_id}/executions/{execution_id}/resume",
+                f"fetchyr/workflows/{seg(workflow_id)}/executions/{seg(execution_id)}/resume",
                 body or {},
                 parse=_execution,
             ),
         )
 
-    async def list_workflows(self) -> Dict[str, Any]:
-        return await arun(self._t, _Op("GET", "fetchyr/workflows"))
+    async def list_workflows(
+        self, page: Optional[int] = None, page_size: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Async equivalent of FetchyrNamespace.list_workflows."""
+        return await arun(self._t, _list_workflows(page, page_size))
 
     async def get_workflow(self, workflow_id: str) -> WorkflowResult:
         return await arun(
-            self._t, _Op("GET", f"fetchyr/workflows/{workflow_id}", parse=_workflow)
+            self._t, _Op("GET", f"fetchyr/workflows/{seg(workflow_id)}", parse=_workflow)
         )
 
     async def update_workflow(
@@ -611,11 +631,11 @@ class AsyncFetchyrNamespace:
         )
 
     async def delete_workflow(self, workflow_id: str) -> None:
-        await arun(self._t, _Op("DELETE", f"fetchyr/workflows/{workflow_id}"))
+        await arun(self._t, _Op("DELETE", f"fetchyr/workflows/{seg(workflow_id)}"))
 
     async def get_workflow_statistics(self, workflow_id: str) -> Dict[str, Any]:
         return await arun(
-            self._t, _Op("GET", f"fetchyr/workflows/{workflow_id}/statistics")
+            self._t, _Op("GET", f"fetchyr/workflows/{seg(workflow_id)}/statistics")
         )
 
     async def create_multi_site_workflow(
@@ -623,7 +643,7 @@ class AsyncFetchyrNamespace:
         name: str,
         sites: List[Dict[str, Any]],
         description: Optional[str] = None,
-        dependencies: Optional[Dict[str, Any]] = None,
+        dependencies: Optional[List[Dict[str, Any]]] = None,
         global_config: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         return await arun(
@@ -686,7 +706,7 @@ class AsyncFetchyrNamespace:
             self._t,
             _Op(
                 "POST",
-                f"fetchyr/mfa-queue/{challenge_id}/resolve",
+                f"fetchyr/mfa-queue/{seg(challenge_id)}/resolve",
                 {"resolution": resolution},
                 parse=_challenge,
             ),
@@ -698,11 +718,11 @@ class AsyncFetchyrNamespace:
     async def get_mfa_challenge(self, challenge_id: str) -> MfaChallenge:
         return await arun(
             self._t,
-            _Op("GET", f"fetchyr/mfa/challenges/{challenge_id}", parse=_challenge),
+            _Op("GET", f"fetchyr/mfa/challenges/{seg(challenge_id)}", parse=_challenge),
         )
 
     async def get_mfa_statistics(self, domain: str) -> Dict[str, Any]:
-        return await arun(self._t, _Op("GET", f"fetchyr/mfa/statistics/{domain}"))
+        return await arun(self._t, _Op("GET", f"fetchyr/mfa/statistics/{seg(domain)}"))
 
     async def check_duplicate(
         self,
@@ -741,18 +761,18 @@ class AsyncFetchyrNamespace:
 
     async def get_dedup_session(self, session_id: str) -> Dict[str, Any]:
         return await arun(
-            self._t, _Op("GET", f"fetchyr/deduplication/sessions/{session_id}")
+            self._t, _Op("GET", f"fetchyr/deduplication/sessions/{seg(session_id)}")
         )
 
     async def get_dedup_session_statistics(self, session_id: str) -> Dict[str, Any]:
         return await arun(
             self._t,
-            _Op("GET", f"fetchyr/deduplication/sessions/{session_id}/statistics"),
+            _Op("GET", f"fetchyr/deduplication/sessions/{seg(session_id)}/statistics"),
         )
 
     async def get_dedup_domain_statistics(self, domain: str) -> Dict[str, Any]:
         return await arun(
-            self._t, _Op("GET", f"fetchyr/deduplication/statistics/{domain}")
+            self._t, _Op("GET", f"fetchyr/deduplication/statistics/{seg(domain)}")
         )
 
     async def discover_auth_chain(self, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -760,7 +780,7 @@ class AsyncFetchyrNamespace:
 
     async def get_auth_chain_status(self, discovery_id: str) -> Dict[str, Any]:
         return await arun(
-            self._t, _Op("GET", f"fetchyr/auth-chain/{discovery_id}/status")
+            self._t, _Op("GET", f"fetchyr/auth-chain/{seg(discovery_id)}/status")
         )
 
     async def resume_auth_chain_credentials(
@@ -768,12 +788,12 @@ class AsyncFetchyrNamespace:
     ) -> Dict[str, Any]:
         return await arun(
             self._t,
-            _Op("POST", f"fetchyr/auth-chain/{discovery_id}/resume-credentials", body),
+            _Op("POST", f"fetchyr/auth-chain/{seg(discovery_id)}/resume-credentials", body),
         )
 
     async def resume_auth_chain_mfa(
         self, discovery_id: str, body: Dict[str, Any]
     ) -> Dict[str, Any]:
         return await arun(
-            self._t, _Op("POST", f"fetchyr/auth-chain/{discovery_id}/resume-mfa", body)
+            self._t, _Op("POST", f"fetchyr/auth-chain/{seg(discovery_id)}/resume-mfa", body)
         )

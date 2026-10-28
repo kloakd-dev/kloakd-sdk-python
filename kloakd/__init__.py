@@ -25,6 +25,8 @@ Quickstart::
 Requests that run long (fetch, extract, the Fetchyr form and login calls,
 Nexus analyze/synthesize/execute) may be handed off by the API as a job
 (HTTP 202, after about 85 s); the SDK follows it and returns the same result.
+A request whose wait ran out raises JobTimeoutError; resume it with
+``client.wait_for_handoff(e.job_id)``.
 
 Documentation: https://docs.kloakd.dev/sdk/python
 """
@@ -34,6 +36,8 @@ from kloakd.errors import (
     ApiError,
     AuthenticationError,
     BillingUnavailableError,
+    ConcurrencyLimitError,
+    ForbiddenError,
     JobFailedError,
     JobTimeoutError,
     KloakdError,
@@ -71,7 +75,7 @@ from kloakd.models import (
     WorkflowResult,
 )
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 __all__ = [
     # Clients
     "Kloakd",
@@ -80,6 +84,8 @@ __all__ = [
     "KloakdError",
     "AuthenticationError",
     "NotEntitledError",
+    "ForbiddenError",
+    "ConcurrencyLimitError",
     "RateLimitError",
     "UpstreamError",
     "ApiError",

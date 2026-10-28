@@ -66,8 +66,16 @@ def test_knowledge_reads_patterns(client: Kloakd) -> None:
 @respx.mock
 def test_reason_sends_query_type(client: Kloakd) -> None:
     route = respx.post(f"{BASE}/nexus/reason").mock(return_value=mock_response({}))
-    client.nexus.reason("page_type", {"url": "u"})
-    assert _sent(route) == {"query_type": "page_type", "parameters": {"url": "u"}}
+    client.nexus.reason("page_type", ["https://e.com"])
+    # modules/nexus/router.py ReasonRequest: parameters is List[str]
+    assert _sent(route) == {"query_type": "page_type", "parameters": ["https://e.com"]}
+
+
+@respx.mock
+def test_reason_sends_an_empty_parameter_list_by_default(client: Kloakd) -> None:
+    route = respx.post(f"{BASE}/nexus/reason").mock(return_value=mock_response({}))
+    client.nexus.reason("page_type")
+    assert _sent(route)["parameters"] == []
 
 
 @respx.mock

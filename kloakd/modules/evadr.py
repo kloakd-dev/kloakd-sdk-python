@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, Iterator, List, Opti
 
 from kloakd._handoff import DEFAULT_POLL_INTERVAL, DEFAULT_POLL_TIMEOUT, PollOptions
 from kloakd.models import AnalyzeResult, FetchEvent, FetchResult
-from kloakd.modules._ops import as_dict, as_list
+from kloakd.modules._ops import as_dict, as_list, seg
 
 if TYPE_CHECKING:
     from kloakd._http import _AsyncHttpTransport, _HttpTransport
@@ -62,6 +62,8 @@ def _parse_fetch(raw: Dict[str, Any], url: str) -> FetchResult:
         if isinstance(artifact, dict)
         else raw.get("artifact_id"),
         error=raw.get("error"),
+        auth_required=bool(raw.get("auth_required", False)),
+        discovery_id=raw.get("discovery_id"),
     )
 
 
@@ -89,11 +91,20 @@ def _parse_analyze(raw: Dict[str, Any]) -> AnalyzeResult:
 
 
 def _event(data: Dict[str, Any]) -> FetchEvent:
+    """A pipeline event (``event_type``) or a job-state event (``type``)."""
+    meta = data.get("metadata")
     return FetchEvent(
         type=str(data.get("event_type") or data.get("type") or ""),
-        tier=data.get("tier"),
-        vendor=data.get("vendor"),
-        metadata=data.get("metadata") or data,
+        stage_id=data.get("stage_id"),
+        status=data.get("status"),
+        message=data.get("message"),
+        progress_pct=data.get("progress_pct"),
+        metadata=meta if isinstance(meta, dict) else {},
+        error=data.get("error"),
+        sequence=data.get("sequence"),
+        job_id=data.get("job_id") or data.get("pipeline_id"),
+        tier_used=data.get("tier_used"),
+        artifact_id=data.get("artifact_id"),
     )
 
 
@@ -154,7 +165,7 @@ class EvadrNamespace:
         """Poll a fetch job until it completes (its result) or fails (JobFailedError)."""
         return self._t.follow(
             job_id,
-            self._t._url(f"evadr/jobs/{job_id}"),
+            self._t._url(f"evadr/jobs/{seg(job_id)}"),
             PollOptions(poll_interval, timeout),
         )
 
@@ -190,11 +201,11 @@ class EvadrNamespace:
 
     def get_job(self, job_id: str) -> Dict[str, Any]:
         """A fetch job's state: status, and result or error when finished."""
-        return as_dict(self._t.get(f"evadr/jobs/{job_id}"))
+        return as_dict(self._t.get(f"evadr/jobs/{seg(job_id)}"))
 
     def job_events(self, job_id: str) -> Iterator[Dict[str, Any]]:
         """A fetch job's progress events (Server-Sent Events)."""
-        for _event_name, data in self._t.iter_sse("GET", f"evadr/jobs/{job_id}/events"):
+        for _event_name, data in self._t.iter_sse("GET", f"evadr/jobs/{seg(job_id)}/events"):
             yield data
 
     def list_vendors(self) -> List[Dict[str, Any]]:
@@ -211,7 +222,7 @@ class EvadrNamespace:
 
     def delete_proxy(self, name: str) -> None:
         """Delete a stored proxy configuration."""
-        self._t.delete(f"evadr/proxies/{name}")
+        self._t.delete(f"evadr/proxies/{seg(name)}")
 
 
 class AsyncEvadrNamespace:
@@ -263,7 +274,7 @@ class AsyncEvadrNamespace:
         """Async equivalent of EvadrNamespace.wait_for_job."""
         return await self._t.follow(
             job_id,
-            self._t._url(f"evadr/jobs/{job_id}"),
+            self._t._url(f"evadr/jobs/{seg(job_id)}"),
             PollOptions(poll_interval, timeout),
         )
 
@@ -299,12 +310,12 @@ class AsyncEvadrNamespace:
 
     async def get_job(self, job_id: str) -> Dict[str, Any]:
         """Async equivalent of EvadrNamespace.get_job."""
-        return as_dict(await self._t.get(f"evadr/jobs/{job_id}"))
+        return as_dict(await self._t.get(f"evadr/jobs/{seg(job_id)}"))
 
     async def job_events(self, job_id: str) -> AsyncIterator[Dict[str, Any]]:
         """Async equivalent of EvadrNamespace.job_events."""
         async for _event_name, data in self._t.aiter_sse(
-            "GET", f"evadr/jobs/{job_id}/events"
+            "GET", f"evadr/jobs/{seg(job_id)}/events"
         ):
             yield data
 
@@ -318,4 +329,4 @@ class AsyncEvadrNamespace:
         await self._t.post("evadr/proxies", {"name": name, "proxy_url": proxy_url})
 
     async def delete_proxy(self, name: str) -> None:
-        await self._t.delete(f"evadr/proxies/{name}")
+        await self._t.delete(f"evadr/proxies/{seg(name)}")

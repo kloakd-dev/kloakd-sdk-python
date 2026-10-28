@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "kloakd-sdk"
-version = "0.4.0"
+version = "0.5.0"
 description = "The official Python SDK for the KLOAKD API"
 readme = "README.md"
 license = "MIT"
@@ -24,6 +24,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 packages = [{ include = "kloakd" }]
+include = [{ path = "kloakd/py.typed", format = ["sdist", "wheel"] }]
 
 [tool.poetry.urls]
 Homepage = "https://kloakd.dev"

@@ -19,11 +19,26 @@ Both expose identical namespace APIs::
 
 from __future__ import annotations
 
-from typing import Any, AsyncIterator, Dict, Iterator, Optional
+from typing import Any, AsyncIterator, Dict, Iterator, List, Optional, Union
 
 from kloakd._handoff import DEFAULT_POLL_INTERVAL, DEFAULT_POLL_TIMEOUT, PollOptions
 from kloakd._http import _AsyncHttpTransport, _HttpTransport
-from kloakd.models import CrawlPage, CrawlProgressEvent, SiteCrawlResult
+from kloakd.errors import (
+    AuthenticationError,
+    BillingUnavailableError,
+    NotEntitledError,
+    PaymentRequiredError,
+    QuotaExceededError,
+    RateLimitError,
+)
+from kloakd.models import (
+    CrawlPage,
+    CrawlProgressEvent,
+    CrawlResult,
+    FetchResult,
+    SiteCrawlResult,
+)
+from kloakd.modules._ops import as_dict
 from kloakd.modules.evadr import AsyncEvadrNamespace, EvadrNamespace
 from kloakd.modules.fetchyr import AsyncFetchyrNamespace, FetchyrNamespace
 from kloakd.modules.kolektr import AsyncKolektrNamespace, KolektrNamespace
@@ -33,8 +48,53 @@ from kloakd.modules.skanyr import AsyncSkanyrNamespace, SkanyrNamespace
 from kloakd.modules.webgrph import AsyncWebgrphNamespace, WebgrphNamespace
 
 _DEFAULT_BASE_URL = "https://api.kloakd.dev"
-_DEFAULT_TIMEOUT = 60.0
+# Above the API's 85 s synchronous wait, so a long request receives its 202
+# hand-off instead of timing out (kobe-scraper kernel/sync_handoff.py).
+_DEFAULT_TIMEOUT = 100.0
 _DEFAULT_MAX_RETRIES = 3
+
+#: Errors that end a crawl() instead of failing one page: the next page
+#: would fail the same way (billing, plan, key or rate limit).
+_FATAL_ERRORS = (
+    PaymentRequiredError,
+    QuotaExceededError,
+    BillingUnavailableError,
+    NotEntitledError,
+    AuthenticationError,
+    RateLimitError,
+)
+
+ExtractSchema = Union[Dict[str, Any], List[Dict[str, Any]]]
+
+
+def _page(fetch: FetchResult, structured_data: Optional[Dict[str, Any]]) -> CrawlPage:
+    return CrawlPage(
+        success=fetch.success,
+        url=fetch.url,
+        status_code=fetch.status_code,
+        tier_used=fetch.tier_used,
+        html=fetch.html,
+        structured_data=structured_data,
+        artifact_id=fetch.artifact_id,
+        error=fetch.error,
+    )
+
+
+def _site_result(
+    url: str, crawl: CrawlResult, pages: List[CrawlPage]
+) -> SiteCrawlResult:
+    """The crawl's own success and error, with the per-page counts."""
+    fetched = sum(1 for p in pages if p.ok)
+    return SiteCrawlResult(
+        success=crawl.success,
+        url=url,
+        total_pages_discovered=crawl.total_pages,
+        pages_fetched=fetched,
+        pages_failed=len(pages) - fetched,
+        pages=pages,
+        crawl_artifact_id=crawl.artifact_id,
+        error=crawl.error,
+    )
 
 
 class Kloakd:
@@ -49,7 +109,9 @@ class Kloakd:
             Generate at https://app.kloakd.dev/settings/api-keys.
         organization_id: Your organization UUID from the KLOAKD dashboard.
         base_url: API base URL. Defaults to ``https://api.kloakd.dev``.
-        timeout: HTTP timeout in seconds. Defaults to 60.0.
+        timeout: HTTP timeout in seconds. Defaults to 100.0, above the
+            API's 85 s synchronous wait, so a long request gets its 202
+            hand-off rather than a client timeout.
         max_retries: Max retry attempts on retryable errors. Defaults to 3.
         http_client: Optional pre-built httpx.Client (useful in tests).
         poll_interval: Seconds before the first poll of a request the API
@@ -115,7 +177,7 @@ class Kloakd:
         url: str,
         max_depth: int = 3,
         max_pages: int = 100,
-        extract_schema: Optional[Dict[str, str]] = None,
+        extract_schema: Optional[ExtractSchema] = None,
         session_artifact_id: Optional[str] = None,
         include_external_links: bool = False,
         poll_timeout: float = 300.0,
@@ -129,14 +191,21 @@ class Kloakd:
         2. ``evadr.fetch()`` — anti-bot fetch per page
         3. ``kolektr.page()`` — structured extraction (if ``extract_schema``)
 
-        Per-page failures are caught and marked ``success=False`` —
-        the crawl never aborts on a single page error.
+        A page that fails is marked ``success=False`` and the crawl goes on;
+        billing, plan, API-key and rate-limit errors (PaymentRequiredError,
+        QuotaExceededError, BillingUnavailableError, NotEntitledError,
+        AuthenticationError, RateLimitError) are raised, since every later
+        page would fail the same way. The result's ``success`` and ``error``
+        are the crawl's own (False, with the reason, when the crawl failed
+        or was still running after ``poll_timeout``).
 
         Args:
             url: Root URL to crawl.
             max_depth: Maximum BFS depth. Default 3.
             max_pages: Maximum pages to crawl. Default 100.
-            extract_schema: CSS selector schema for per-page extraction.
+            extract_schema: Per-page extraction schema, as for
+                ``kolektr.page``: the ``{field: "css:selector"}`` shorthand,
+                a list of fields, or a full schema_spec.
             session_artifact_id: AUTHENTICATED_SESSION artifact from Fetchyr.
             include_external_links: Follow off-domain links.
             poll_timeout: Max seconds to wait for crawl discovery. Default 300.
@@ -166,67 +235,17 @@ class Kloakd:
             poll_interval=poll_interval,
         )
 
-        pages: list[CrawlPage] = []
-        fetched = 0
-        failed = 0
-
+        pages: List[CrawlPage] = []
         for node in crawl_result.pages:
-            try:
-                fetch_result = self.evadr.fetch(
-                    node.url,
-                    session_artifact_id=session_artifact_id,
-                )
-
-                structured_data: Optional[Dict[str, Any]] = None
-                if extract_schema and fetch_result.success:
-                    extraction = self.kolektr.page(
-                        node.url,
-                        schema=extract_schema,
-                        fetch_artifact_id=fetch_result.artifact_id,
-                        session_artifact_id=session_artifact_id,
-                    )
-                    if extraction.records:
-                        structured_data = extraction.records[0]
-
-                page = CrawlPage(
-                    success=fetch_result.success,
-                    url=fetch_result.url,
-                    status_code=fetch_result.status_code,
-                    tier_used=fetch_result.tier_used,
-                    html=fetch_result.html,
-                    structured_data=structured_data,
-                    artifact_id=fetch_result.artifact_id,
-                    error=fetch_result.error,
-                )
-                pages.append(page)
-                if page.ok:
-                    fetched += 1
-                else:
-                    failed += 1
-            except Exception as exc:
-                pages.append(CrawlPage(
-                    success=False,
-                    url=node.url,
-                    error=str(exc),
-                ))
-                failed += 1
-
-        return SiteCrawlResult(
-            success=True,
-            url=url,
-            total_pages_discovered=crawl_result.total_pages,
-            pages_fetched=fetched,
-            pages_failed=failed,
-            pages=pages,
-            crawl_artifact_id=crawl_result.artifact_id,
-        )
+            pages.append(self._crawl_page(node.url, extract_schema, session_artifact_id))
+        return _site_result(url, crawl_result, pages)
 
     def crawl_stream(
         self,
         url: str,
         max_depth: int = 3,
         max_pages: int = 100,
-        extract_schema: Optional[Dict[str, str]] = None,
+        extract_schema: Optional[ExtractSchema] = None,
         session_artifact_id: Optional[str] = None,
         include_external_links: bool = False,
         poll_timeout: float = 300.0,
@@ -237,8 +256,9 @@ class Kloakd:
 
         Same as ``crawl()`` but yields events in real-time instead of
         returning a single result. Event types:
-        - ``discovery_started`` — crawl discovery started
-        - ``discovery_complete`` — all pages discovered
+        - ``discovery_started`` — crawl discovery started (emitted by the SDK)
+        - ``discovery_complete`` — the crawl finished (``success``/``error``
+          are the crawl's own)
         - ``page_fetching`` — started fetching a page
         - ``page_fetched`` — page fetched successfully
         - ``page_failed`` — page fetch failed
@@ -269,103 +289,97 @@ class Kloakd:
             type="discovery_complete",
             url=url,
             total=total,
+            success=crawl_result.success,
+            error=crawl_result.error,
             metadata={"pages_found": total},
         )
 
-        pages: list[CrawlPage] = []
-        fetched = 0
-        failed = 0
-
+        pages: List[CrawlPage] = []
         for i, node in enumerate(crawl_result.pages):
             page_num = i + 1
             yield CrawlProgressEvent(
-                type="page_fetching",
-                url=node.url,
-                page=page_num,
-                total=total,
+                type="page_fetching", url=node.url, page=page_num, total=total
             )
-
-            try:
-                fetch_result = self.evadr.fetch(
-                    node.url,
-                    session_artifact_id=session_artifact_id,
-                )
-
-                structured_data: Optional[Dict[str, Any]] = None
-                if extract_schema and fetch_result.success:
-                    extraction = self.kolektr.page(
-                        node.url,
-                        schema=extract_schema,
-                        fetch_artifact_id=fetch_result.artifact_id,
-                        session_artifact_id=session_artifact_id,
-                    )
-                    if extraction.records:
-                        structured_data = extraction.records[0]
-
-                page = CrawlPage(
-                    success=fetch_result.success,
-                    url=fetch_result.url,
-                    status_code=fetch_result.status_code,
-                    tier_used=fetch_result.tier_used,
-                    html=fetch_result.html,
-                    structured_data=structured_data,
-                    artifact_id=fetch_result.artifact_id,
-                    error=fetch_result.error,
-                )
-                pages.append(page)
-
-                if page.ok:
-                    fetched += 1
-                    yield CrawlProgressEvent(
-                        type="page_fetched",
-                        url=node.url,
-                        page=page_num,
-                        total=total,
-                        success=True,
-                        metadata={"tier_used": fetch_result.tier_used},
-                    )
-                else:
-                    failed += 1
-                    yield CrawlProgressEvent(
-                        type="page_failed",
-                        url=node.url,
-                        page=page_num,
-                        total=total,
-                        success=False,
-                        error=fetch_result.error,
-                    )
-            except Exception as exc:
-                pages.append(CrawlPage(
-                    success=False,
+            page = self._crawl_page(node.url, extract_schema, session_artifact_id)
+            pages.append(page)
+            if page.ok:
+                yield CrawlProgressEvent(
+                    type="page_fetched",
                     url=node.url,
-                    error=str(exc),
-                ))
-                failed += 1
+                    page=page_num,
+                    total=total,
+                    success=True,
+                    metadata={"tier_used": page.tier_used},
+                )
+            else:
                 yield CrawlProgressEvent(
                     type="page_failed",
                     url=node.url,
                     page=page_num,
                     total=total,
                     success=False,
-                    error=str(exc),
+                    error=page.error,
                 )
 
-        result = SiteCrawlResult(
-            success=True,
-            url=url,
-            total_pages_discovered=total,
-            pages_fetched=fetched,
-            pages_failed=failed,
-            pages=pages,
-            crawl_artifact_id=crawl_result.artifact_id,
-        )
+        result = _site_result(url, crawl_result, pages)
         yield CrawlProgressEvent(
             type="crawl_complete",
             url=url,
             total=total,
-            success=True,
+            success=result.success,
+            error=result.error,
             metadata={"result": result},
         )
+
+    def get_handoff(self, job_id: str) -> Dict[str, Any]:
+        """The state of a request the API handed off as a job (HTTP 202):
+        ``{"job_id", "status": "running" | "completed" | "failed",
+        "result"?, "error"?}`` (``GET /api/v1/organizations/{org}/handoff/{job_id}``,
+        kobe-scraper kernel/sync_handoff.py). A job unknown or expired (an
+        hour after it ends) raises ApiError 404."""
+        url = self._transport._handoff_url(job_id)
+        return as_dict(self._transport._send("GET", url)[1])
+
+    def wait_for_handoff(
+        self,
+        job_id: str,
+        poll_interval: float = DEFAULT_POLL_INTERVAL,
+        timeout: float = DEFAULT_POLL_TIMEOUT,
+    ) -> Dict[str, Any]:
+        """Poll a handed-off request until it completes; returns the route's
+        own response body. Use it to resume after JobTimeoutError
+        (``e.job_id``). A failed or expired job raises JobFailedError."""
+        return self._transport.follow(
+            job_id,
+            self._transport._handoff_url(job_id),
+            PollOptions(poll_interval, timeout),
+        )
+
+    def _crawl_page(
+        self,
+        url: str,
+        extract_schema: Optional[ExtractSchema],
+        session_artifact_id: Optional[str],
+    ) -> CrawlPage:
+        """Fetch (and extract) one crawled page. A page error marks only that
+        page failed; billing, plan, key and rate-limit errors are raised."""
+        try:
+            fetch = self.evadr.fetch(url, session_artifact_id=session_artifact_id)
+            structured_data: Optional[Dict[str, Any]] = None
+            if extract_schema and fetch.success:
+                extraction = self.kolektr.page(
+                    url,
+                    schema=extract_schema,
+                    fetch_artifact_id=fetch.artifact_id,
+                    session_artifact_id=session_artifact_id,
+                )
+                if extraction.records:
+                    structured_data = extraction.records[0]
+            return _page(fetch, structured_data)
+        except _FATAL_ERRORS:
+            raise
+        except Exception as exc:
+            return CrawlPage(success=False, url=url, error=str(exc))
 
     def __repr__(self) -> str:
         return (
@@ -385,7 +399,9 @@ class AsyncKloakd:
         api_key: Bearer API key.
         organization_id: Your organization UUID.
         base_url: API base URL. Defaults to ``https://api.kloakd.dev``.
-        timeout: HTTP timeout in seconds. Defaults to 60.0.
+        timeout: HTTP timeout in seconds. Defaults to 100.0, above the
+            API's 85 s synchronous wait, so a long request gets its 202
+            hand-off rather than a client timeout.
         max_retries: Max retry attempts on retryable errors. Defaults to 3.
         http_client: Optional pre-built httpx.AsyncClient (useful in tests).
         poll_interval, poll_timeout: As for Kloakd.
@@ -451,7 +467,7 @@ class AsyncKloakd:
         url: str,
         max_depth: int = 3,
         max_pages: int = 100,
-        extract_schema: Optional[Dict[str, str]] = None,
+        extract_schema: Optional[ExtractSchema] = None,
         session_artifact_id: Optional[str] = None,
         include_external_links: bool = False,
         poll_timeout: float = 300.0,
@@ -480,67 +496,17 @@ class AsyncKloakd:
             poll_interval=poll_interval,
         )
 
-        pages: list[CrawlPage] = []
-        fetched = 0
-        failed = 0
-
+        pages: List[CrawlPage] = []
         for node in crawl_result.pages:
-            try:
-                fetch_result = await self.evadr.fetch(
-                    node.url,
-                    session_artifact_id=session_artifact_id,
-                )
-
-                structured_data: Optional[Dict[str, Any]] = None
-                if extract_schema and fetch_result.success:
-                    extraction = await self.kolektr.page(
-                        node.url,
-                        schema=extract_schema,
-                        fetch_artifact_id=fetch_result.artifact_id,
-                        session_artifact_id=session_artifact_id,
-                    )
-                    if extraction.records:
-                        structured_data = extraction.records[0]
-
-                page = CrawlPage(
-                    success=fetch_result.success,
-                    url=fetch_result.url,
-                    status_code=fetch_result.status_code,
-                    tier_used=fetch_result.tier_used,
-                    html=fetch_result.html,
-                    structured_data=structured_data,
-                    artifact_id=fetch_result.artifact_id,
-                    error=fetch_result.error,
-                )
-                pages.append(page)
-                if page.ok:
-                    fetched += 1
-                else:
-                    failed += 1
-            except Exception as exc:
-                pages.append(CrawlPage(
-                    success=False,
-                    url=node.url,
-                    error=str(exc),
-                ))
-                failed += 1
-
-        return SiteCrawlResult(
-            success=True,
-            url=url,
-            total_pages_discovered=crawl_result.total_pages,
-            pages_fetched=fetched,
-            pages_failed=failed,
-            pages=pages,
-            crawl_artifact_id=crawl_result.artifact_id,
-        )
+            pages.append(await self._crawl_page(node.url, extract_schema, session_artifact_id))
+        return _site_result(url, crawl_result, pages)
 
     async def crawl_stream(
         self,
         url: str,
         max_depth: int = 3,
         max_pages: int = 100,
-        extract_schema: Optional[Dict[str, str]] = None,
+        extract_schema: Optional[ExtractSchema] = None,
         session_artifact_id: Optional[str] = None,
         include_external_links: bool = False,
         poll_timeout: float = 300.0,
@@ -574,103 +540,97 @@ class AsyncKloakd:
             type="discovery_complete",
             url=url,
             total=total,
+            success=crawl_result.success,
+            error=crawl_result.error,
             metadata={"pages_found": total},
         )
 
-        pages: list[CrawlPage] = []
-        fetched = 0
-        failed = 0
-
+        pages: List[CrawlPage] = []
         for i, node in enumerate(crawl_result.pages):
             page_num = i + 1
             yield CrawlProgressEvent(
-                type="page_fetching",
-                url=node.url,
-                page=page_num,
-                total=total,
+                type="page_fetching", url=node.url, page=page_num, total=total
             )
-
-            try:
-                fetch_result = await self.evadr.fetch(
-                    node.url,
-                    session_artifact_id=session_artifact_id,
-                )
-
-                structured_data: Optional[Dict[str, Any]] = None
-                if extract_schema and fetch_result.success:
-                    extraction = await self.kolektr.page(
-                        node.url,
-                        schema=extract_schema,
-                        fetch_artifact_id=fetch_result.artifact_id,
-                        session_artifact_id=session_artifact_id,
-                    )
-                    if extraction.records:
-                        structured_data = extraction.records[0]
-
-                page = CrawlPage(
-                    success=fetch_result.success,
-                    url=fetch_result.url,
-                    status_code=fetch_result.status_code,
-                    tier_used=fetch_result.tier_used,
-                    html=fetch_result.html,
-                    structured_data=structured_data,
-                    artifact_id=fetch_result.artifact_id,
-                    error=fetch_result.error,
-                )
-                pages.append(page)
-
-                if page.ok:
-                    fetched += 1
-                    yield CrawlProgressEvent(
-                        type="page_fetched",
-                        url=node.url,
-                        page=page_num,
-                        total=total,
-                        success=True,
-                        metadata={"tier_used": fetch_result.tier_used},
-                    )
-                else:
-                    failed += 1
-                    yield CrawlProgressEvent(
-                        type="page_failed",
-                        url=node.url,
-                        page=page_num,
-                        total=total,
-                        success=False,
-                        error=fetch_result.error,
-                    )
-            except Exception as exc:
-                pages.append(CrawlPage(
-                    success=False,
+            page = await self._crawl_page(node.url, extract_schema, session_artifact_id)
+            pages.append(page)
+            if page.ok:
+                yield CrawlProgressEvent(
+                    type="page_fetched",
                     url=node.url,
-                    error=str(exc),
-                ))
-                failed += 1
+                    page=page_num,
+                    total=total,
+                    success=True,
+                    metadata={"tier_used": page.tier_used},
+                )
+            else:
                 yield CrawlProgressEvent(
                     type="page_failed",
                     url=node.url,
                     page=page_num,
                     total=total,
                     success=False,
-                    error=str(exc),
+                    error=page.error,
                 )
 
-        result = SiteCrawlResult(
-            success=True,
-            url=url,
-            total_pages_discovered=total,
-            pages_fetched=fetched,
-            pages_failed=failed,
-            pages=pages,
-            crawl_artifact_id=crawl_result.artifact_id,
-        )
+        result = _site_result(url, crawl_result, pages)
         yield CrawlProgressEvent(
             type="crawl_complete",
             url=url,
             total=total,
-            success=True,
+            success=result.success,
+            error=result.error,
             metadata={"result": result},
         )
+
+    async def get_handoff(self, job_id: str) -> Dict[str, Any]:
+        """Async equivalent of Kloakd.get_handoff: the state of a request the API handed off as a job (HTTP 202):
+        ``{"job_id", "status": "running" | "completed" | "failed",
+        "result"?, "error"?}`` (``GET /api/v1/organizations/{org}/handoff/{job_id}``,
+        kobe-scraper kernel/sync_handoff.py). A job unknown or expired (an
+        hour after it ends) raises ApiError 404."""
+        url = self._transport._handoff_url(job_id)
+        return as_dict((await self._transport._send("GET", url))[1])
+
+    async def wait_for_handoff(
+        self,
+        job_id: str,
+        poll_interval: float = DEFAULT_POLL_INTERVAL,
+        timeout: float = DEFAULT_POLL_TIMEOUT,
+    ) -> Dict[str, Any]:
+        """Async equivalent of Kloakd.wait_for_handoff: poll a handed-off request until it completes; returns the route's
+        own response body. Use it to resume after JobTimeoutError
+        (``e.job_id``). A failed or expired job raises JobFailedError."""
+        return await self._transport.follow(
+            job_id,
+            self._transport._handoff_url(job_id),
+            PollOptions(poll_interval, timeout),
+        )
+
+    async def _crawl_page(
+        self,
+        url: str,
+        extract_schema: Optional[ExtractSchema],
+        session_artifact_id: Optional[str],
+    ) -> CrawlPage:
+        """Fetch (and extract) one crawled page. A page error marks only that
+        page failed; billing, plan, key and rate-limit errors are raised."""
+        try:
+            fetch = await self.evadr.fetch(url, session_artifact_id=session_artifact_id)
+            structured_data: Optional[Dict[str, Any]] = None
+            if extract_schema and fetch.success:
+                extraction = await self.kolektr.page(
+                    url,
+                    schema=extract_schema,
+                    fetch_artifact_id=fetch.artifact_id,
+                    session_artifact_id=session_artifact_id,
+                )
+                if extraction.records:
+                    structured_data = extraction.records[0]
+            return _page(fetch, structured_data)
+        except _FATAL_ERRORS:
+            raise
+        except Exception as exc:
+            return CrawlPage(success=False, url=url, error=str(exc))
 
     def __repr__(self) -> str:
         return (

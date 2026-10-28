@@ -9,7 +9,7 @@ Usage::
 
     crawl = client.webgrph.crawl("https://example.com")
     site = client.skanyr.site_from_crawl(crawl.crawl_id)
-    hits = client.skanyr.search("pricing", site_id=site["id"])
+    hits = client.skanyr.search("pricing", site_id=site["site_id"])
 
 The 0.2 discovery methods (discover, hierarchy, expand_node, …) called
 routes the API no longer has; page discovery is ``webgrph.crawl``, and
@@ -20,10 +20,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from kloakd.modules._ops import _Op, arun, as_list, compact, run
+from kloakd.modules._ops import _Op, arun, as_list, compact, run, seg
 
 if TYPE_CHECKING:
     from kloakd._http import _AsyncHttpTransport, _HttpTransport
+
+
+def _text(raw: Any) -> str:
+    return raw if isinstance(raw, str) else ""
 
 
 class SkanyrNamespace:
@@ -37,21 +41,23 @@ class SkanyrNamespace:
 
     def site_from_crawl(self, crawl_id: str) -> Dict[str, Any]:
         """Build (or update) a site from a finished crawl."""
-        return run(self._t, _Op("POST", f"skanyr/sites/from-crawl/{crawl_id}", {}))
+        return run(self._t, _Op("POST", f"skanyr/sites/from-crawl/{seg(crawl_id)}", {}))
 
     def get_site(self, site_id: str) -> Dict[str, Any]:
-        return run(self._t, _Op("GET", f"skanyr/sites/{site_id}"))
+        return run(self._t, _Op("GET", f"skanyr/sites/{seg(site_id)}"))
 
     def update_site(
-        self, site_id: str, policy: Optional[Dict[str, Any]] = None
+        self, site_id: str, policy: str
     ) -> Dict[str, Any]:
+        """Set a site's default sync policy: ``full``, ``incremental``,
+        ``conditional`` or ``head_first`` (modules/skanyr/router.py SiteUpdateRequest)."""
         return run(
             self._t,
-            _Op("PATCH", f"skanyr/sites/{site_id}", compact({"policy": policy})),
+            _Op("PATCH", f"skanyr/sites/{seg(site_id)}", {"policy": policy}),
         )
 
     def delete_site(self, site_id: str) -> None:
-        run(self._t, _Op("DELETE", f"skanyr/sites/{site_id}"))
+        run(self._t, _Op("DELETE", f"skanyr/sites/{seg(site_id)}"))
 
     def sync(
         self,
@@ -74,25 +80,24 @@ class SkanyrNamespace:
         site_id: str,
         resource_ids: Optional[List[str]] = None,
         max_bytes: Optional[int] = None,
-    ) -> Dict[str, Any]:
-        return run(
-            self._t,
-            _Op(
-                "POST",
-                f"skanyr/sites/{site_id}/export",
-                compact({"resource_ids": resource_ids, "max_bytes": max_bytes}),
-            ),
+    ) -> bytes:
+        """The site's captured content as a ZIP archive (raw bytes)."""
+        return self._t.request_bytes(
+            "POST",
+            f"skanyr/sites/{seg(site_id)}/export",
+            json_body=compact({"resource_ids": resource_ids, "max_bytes": max_bytes}),
         )
 
     def get_site_apis(
         self, site_id: str, limit: Optional[int] = None, offset: Optional[int] = None
-    ) -> Dict[str, Any]:
+    ) -> List[Dict[str, Any]]:
         return run(
             self._t,
             _Op(
                 "GET",
-                f"skanyr/sites/{site_id}/apis",
+                f"skanyr/sites/{seg(site_id)}/apis",
                 params=compact({"limit": limit, "offset": offset}),
+                parse=as_list,
             ),
         )
 
@@ -102,15 +107,16 @@ class SkanyrNamespace:
         resource_type: Optional[str] = None,
         limit: Optional[int] = None,
         offset: Optional[int] = None,
-    ) -> Dict[str, Any]:
+    ) -> List[Dict[str, Any]]:
         return run(
             self._t,
             _Op(
                 "GET",
-                f"skanyr/sites/{site_id}/resources",
+                f"skanyr/sites/{seg(site_id)}/resources",
                 params=compact(
                     {"resource_type": resource_type, "limit": limit, "offset": offset}
                 ),
+                parse=as_list,
             ),
         )
 
@@ -126,7 +132,7 @@ class SkanyrNamespace:
             self._t,
             _Op(
                 "GET",
-                f"skanyr/sites/{site_id}/search",
+                f"skanyr/sites/{seg(site_id)}/search",
                 params=compact(
                     {"q": q, "limit": limit, "offset": offset, "mime_type": mime_type}
                 ),
@@ -139,20 +145,21 @@ class SkanyrNamespace:
         finding_kind: Optional[str] = None,
         limit: Optional[int] = None,
         offset: Optional[int] = None,
-    ) -> Dict[str, Any]:
+    ) -> List[Dict[str, Any]]:
         return run(
             self._t,
             _Op(
                 "GET",
-                f"skanyr/sites/{site_id}/findings",
+                f"skanyr/sites/{seg(site_id)}/findings",
                 params=compact(
                     {"finding_kind": finding_kind, "limit": limit, "offset": offset}
                 ),
+                parse=as_list,
             ),
         )
 
-    def get_technologies(self, site_id: str) -> Dict[str, Any]:
-        return run(self._t, _Op("GET", f"skanyr/sites/{site_id}/technologies"))
+    def get_technologies(self, site_id: str) -> List[Dict[str, Any]]:
+        return run(self._t, _Op("GET", f"skanyr/sites/{seg(site_id)}/technologies", parse=as_list))
 
     def get_technology_evidence(
         self,
@@ -166,7 +173,7 @@ class SkanyrNamespace:
             self._t,
             _Op(
                 "GET",
-                f"skanyr/sites/{site_id}/technology-evidence",
+                f"skanyr/sites/{seg(site_id)}/technology-evidence",
                 params=compact(
                     {
                         "subject": subject,
@@ -185,7 +192,7 @@ class SkanyrNamespace:
             self._t,
             _Op(
                 "GET",
-                f"skanyr/sites/{site_id}/snapshots",
+                f"skanyr/sites/{seg(site_id)}/snapshots",
                 params=compact({"limit": limit}),
             ),
         )
@@ -195,14 +202,14 @@ class SkanyrNamespace:
             self._t,
             _Op(
                 "GET",
-                f"skanyr/sites/{site_id}/timeline",
+                f"skanyr/sites/{seg(site_id)}/timeline",
                 params=compact({"limit": limit}),
             ),
         )
 
     def get_timeline_snapshot(self, site_id: str, snapshot_id: str) -> Dict[str, Any]:
         return run(
-            self._t, _Op("GET", f"skanyr/sites/{site_id}/timeline/{snapshot_id}")
+            self._t, _Op("GET", f"skanyr/sites/{seg(site_id)}/timeline/{seg(snapshot_id)}")
         )
 
     def diff(
@@ -215,7 +222,7 @@ class SkanyrNamespace:
             self._t,
             _Op(
                 "GET",
-                f"skanyr/sites/{site_id}/diff",
+                f"skanyr/sites/{seg(site_id)}/diff",
                 params=compact({"snapshot_a": snapshot_a, "snapshot_b": snapshot_b}),
             ),
         )
@@ -232,7 +239,7 @@ class SkanyrNamespace:
             self._t,
             _Op(
                 "GET",
-                f"skanyr/sites/{site_id}/graph",
+                f"skanyr/sites/{seg(site_id)}/graph",
                 params=compact(
                     {
                         "resource_type": resource_type,
@@ -245,7 +252,7 @@ class SkanyrNamespace:
         )
 
     def get_graph_stats(self, site_id: str) -> Dict[str, Any]:
-        return run(self._t, _Op("GET", f"skanyr/sites/{site_id}/graph/stats"))
+        return run(self._t, _Op("GET", f"skanyr/sites/{seg(site_id)}/graph/stats"))
 
     def get_subgraph(
         self, site_id: str, resource_id: str, hops: Optional[int] = None
@@ -254,7 +261,7 @@ class SkanyrNamespace:
             self._t,
             _Op(
                 "GET",
-                f"skanyr/sites/{site_id}/graph/subgraph/{resource_id}",
+                f"skanyr/sites/{seg(site_id)}/graph/subgraph/{seg(resource_id)}",
                 params=compact({"hops": hops}),
             ),
         )
@@ -265,7 +272,7 @@ class SkanyrNamespace:
         resource_type: Optional[str] = None,
         limit: Optional[int] = None,
         offset: Optional[int] = None,
-    ) -> Dict[str, Any]:
+    ) -> List[Dict[str, Any]]:
         return run(
             self._t,
             _Op(
@@ -279,11 +286,12 @@ class SkanyrNamespace:
                         "offset": offset,
                     }
                 ),
+                parse=as_list,
             ),
         )
 
     def get_resource(self, resource_id: str) -> Dict[str, Any]:
-        return run(self._t, _Op("GET", f"skanyr/resources/{resource_id}"))
+        return run(self._t, _Op("GET", f"skanyr/resources/{seg(resource_id)}"))
 
     def search(
         self,
@@ -331,11 +339,12 @@ class SkanyrNamespace:
             ),
         )
 
-    def get_extraction_text(self, content_hash: str) -> Dict[str, Any]:
-        return run(self._t, _Op("GET", f"skanyr/extractions/{content_hash}/text"))
+    def get_extraction_text(self, content_hash: str) -> str:
+        """The extracted plain text (the API answers text/plain)."""
+        return run(self._t, _Op("GET", f"skanyr/extractions/{seg(content_hash)}/text", parse=_text))
 
     def get_extraction_structure(self, content_hash: str) -> Dict[str, Any]:
-        return run(self._t, _Op("GET", f"skanyr/extractions/{content_hash}/structure"))
+        return run(self._t, _Op("GET", f"skanyr/extractions/{seg(content_hash)}/structure"))
 
 
 class AsyncSkanyrNamespace:
@@ -350,22 +359,24 @@ class AsyncSkanyrNamespace:
     async def site_from_crawl(self, crawl_id: str) -> Dict[str, Any]:
         """Build (or update) a site from a finished crawl."""
         return await arun(
-            self._t, _Op("POST", f"skanyr/sites/from-crawl/{crawl_id}", {})
+            self._t, _Op("POST", f"skanyr/sites/from-crawl/{seg(crawl_id)}", {})
         )
 
     async def get_site(self, site_id: str) -> Dict[str, Any]:
-        return await arun(self._t, _Op("GET", f"skanyr/sites/{site_id}"))
+        return await arun(self._t, _Op("GET", f"skanyr/sites/{seg(site_id)}"))
 
     async def update_site(
-        self, site_id: str, policy: Optional[Dict[str, Any]] = None
+        self, site_id: str, policy: str
     ) -> Dict[str, Any]:
+        """Set a site's default sync policy: ``full``, ``incremental``,
+        ``conditional`` or ``head_first`` (modules/skanyr/router.py SiteUpdateRequest)."""
         return await arun(
             self._t,
-            _Op("PATCH", f"skanyr/sites/{site_id}", compact({"policy": policy})),
+            _Op("PATCH", f"skanyr/sites/{seg(site_id)}", {"policy": policy}),
         )
 
     async def delete_site(self, site_id: str) -> None:
-        await arun(self._t, _Op("DELETE", f"skanyr/sites/{site_id}"))
+        await arun(self._t, _Op("DELETE", f"skanyr/sites/{seg(site_id)}"))
 
     async def sync(
         self,
@@ -388,25 +399,24 @@ class AsyncSkanyrNamespace:
         site_id: str,
         resource_ids: Optional[List[str]] = None,
         max_bytes: Optional[int] = None,
-    ) -> Dict[str, Any]:
-        return await arun(
-            self._t,
-            _Op(
-                "POST",
-                f"skanyr/sites/{site_id}/export",
-                compact({"resource_ids": resource_ids, "max_bytes": max_bytes}),
-            ),
+    ) -> bytes:
+        """The site's captured content as a ZIP archive (raw bytes)."""
+        return await self._t.request_bytes(
+            "POST",
+            f"skanyr/sites/{seg(site_id)}/export",
+            json_body=compact({"resource_ids": resource_ids, "max_bytes": max_bytes}),
         )
 
     async def get_site_apis(
         self, site_id: str, limit: Optional[int] = None, offset: Optional[int] = None
-    ) -> Dict[str, Any]:
+    ) -> List[Dict[str, Any]]:
         return await arun(
             self._t,
             _Op(
                 "GET",
-                f"skanyr/sites/{site_id}/apis",
+                f"skanyr/sites/{seg(site_id)}/apis",
                 params=compact({"limit": limit, "offset": offset}),
+                parse=as_list,
             ),
         )
 
@@ -416,15 +426,16 @@ class AsyncSkanyrNamespace:
         resource_type: Optional[str] = None,
         limit: Optional[int] = None,
         offset: Optional[int] = None,
-    ) -> Dict[str, Any]:
+    ) -> List[Dict[str, Any]]:
         return await arun(
             self._t,
             _Op(
                 "GET",
-                f"skanyr/sites/{site_id}/resources",
+                f"skanyr/sites/{seg(site_id)}/resources",
                 params=compact(
                     {"resource_type": resource_type, "limit": limit, "offset": offset}
                 ),
+                parse=as_list,
             ),
         )
 
@@ -440,7 +451,7 @@ class AsyncSkanyrNamespace:
             self._t,
             _Op(
                 "GET",
-                f"skanyr/sites/{site_id}/search",
+                f"skanyr/sites/{seg(site_id)}/search",
                 params=compact(
                     {"q": q, "limit": limit, "offset": offset, "mime_type": mime_type}
                 ),
@@ -453,20 +464,21 @@ class AsyncSkanyrNamespace:
         finding_kind: Optional[str] = None,
         limit: Optional[int] = None,
         offset: Optional[int] = None,
-    ) -> Dict[str, Any]:
+    ) -> List[Dict[str, Any]]:
         return await arun(
             self._t,
             _Op(
                 "GET",
-                f"skanyr/sites/{site_id}/findings",
+                f"skanyr/sites/{seg(site_id)}/findings",
                 params=compact(
                     {"finding_kind": finding_kind, "limit": limit, "offset": offset}
                 ),
+                parse=as_list,
             ),
         )
 
-    async def get_technologies(self, site_id: str) -> Dict[str, Any]:
-        return await arun(self._t, _Op("GET", f"skanyr/sites/{site_id}/technologies"))
+    async def get_technologies(self, site_id: str) -> List[Dict[str, Any]]:
+        return await arun(self._t, _Op("GET", f"skanyr/sites/{seg(site_id)}/technologies", parse=as_list))
 
     async def get_technology_evidence(
         self,
@@ -480,7 +492,7 @@ class AsyncSkanyrNamespace:
             self._t,
             _Op(
                 "GET",
-                f"skanyr/sites/{site_id}/technology-evidence",
+                f"skanyr/sites/{seg(site_id)}/technology-evidence",
                 params=compact(
                     {
                         "subject": subject,
@@ -499,7 +511,7 @@ class AsyncSkanyrNamespace:
             self._t,
             _Op(
                 "GET",
-                f"skanyr/sites/{site_id}/snapshots",
+                f"skanyr/sites/{seg(site_id)}/snapshots",
                 params=compact({"limit": limit}),
             ),
         )
@@ -511,7 +523,7 @@ class AsyncSkanyrNamespace:
             self._t,
             _Op(
                 "GET",
-                f"skanyr/sites/{site_id}/timeline",
+                f"skanyr/sites/{seg(site_id)}/timeline",
                 params=compact({"limit": limit}),
             ),
         )
@@ -520,7 +532,7 @@ class AsyncSkanyrNamespace:
         self, site_id: str, snapshot_id: str
     ) -> Dict[str, Any]:
         return await arun(
-            self._t, _Op("GET", f"skanyr/sites/{site_id}/timeline/{snapshot_id}")
+            self._t, _Op("GET", f"skanyr/sites/{seg(site_id)}/timeline/{seg(snapshot_id)}")
         )
 
     async def diff(
@@ -533,7 +545,7 @@ class AsyncSkanyrNamespace:
             self._t,
             _Op(
                 "GET",
-                f"skanyr/sites/{site_id}/diff",
+                f"skanyr/sites/{seg(site_id)}/diff",
                 params=compact({"snapshot_a": snapshot_a, "snapshot_b": snapshot_b}),
             ),
         )
@@ -550,7 +562,7 @@ class AsyncSkanyrNamespace:
             self._t,
             _Op(
                 "GET",
-                f"skanyr/sites/{site_id}/graph",
+                f"skanyr/sites/{seg(site_id)}/graph",
                 params=compact(
                     {
                         "resource_type": resource_type,
@@ -563,7 +575,7 @@ class AsyncSkanyrNamespace:
         )
 
     async def get_graph_stats(self, site_id: str) -> Dict[str, Any]:
-        return await arun(self._t, _Op("GET", f"skanyr/sites/{site_id}/graph/stats"))
+        return await arun(self._t, _Op("GET", f"skanyr/sites/{seg(site_id)}/graph/stats"))
 
     async def get_subgraph(
         self, site_id: str, resource_id: str, hops: Optional[int] = None
@@ -572,7 +584,7 @@ class AsyncSkanyrNamespace:
             self._t,
             _Op(
                 "GET",
-                f"skanyr/sites/{site_id}/graph/subgraph/{resource_id}",
+                f"skanyr/sites/{seg(site_id)}/graph/subgraph/{seg(resource_id)}",
                 params=compact({"hops": hops}),
             ),
         )
@@ -583,7 +595,7 @@ class AsyncSkanyrNamespace:
         resource_type: Optional[str] = None,
         limit: Optional[int] = None,
         offset: Optional[int] = None,
-    ) -> Dict[str, Any]:
+    ) -> List[Dict[str, Any]]:
         return await arun(
             self._t,
             _Op(
@@ -597,11 +609,12 @@ class AsyncSkanyrNamespace:
                         "offset": offset,
                     }
                 ),
+                parse=as_list,
             ),
         )
 
     async def get_resource(self, resource_id: str) -> Dict[str, Any]:
-        return await arun(self._t, _Op("GET", f"skanyr/resources/{resource_id}"))
+        return await arun(self._t, _Op("GET", f"skanyr/resources/{seg(resource_id)}"))
 
     async def search(
         self,
@@ -649,12 +662,13 @@ class AsyncSkanyrNamespace:
             ),
         )
 
-    async def get_extraction_text(self, content_hash: str) -> Dict[str, Any]:
+    async def get_extraction_text(self, content_hash: str) -> str:
+        """The extracted plain text (the API answers text/plain)."""
         return await arun(
-            self._t, _Op("GET", f"skanyr/extractions/{content_hash}/text")
+            self._t, _Op("GET", f"skanyr/extractions/{seg(content_hash)}/text", parse=_text)
         )
 
     async def get_extraction_structure(self, content_hash: str) -> Dict[str, Any]:
         return await arun(
-            self._t, _Op("GET", f"skanyr/extractions/{content_hash}/structure")
+            self._t, _Op("GET", f"skanyr/extractions/{seg(content_hash)}/structure")
         )

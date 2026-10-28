@@ -20,7 +20,7 @@ Usage::
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable, Dict, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from kloakd.models import (
     NexusAnalyzeResult,
@@ -211,11 +211,12 @@ class NexusNamespace:
     def reason(
         self,
         query_type: str,
-        parameters: Optional[Dict[str, Any]] = None,
+        parameters: Optional[List[str]] = None,
         perception_id: Optional[str] = None,
         timeout_secs: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Run a reasoning query (``query_type`` is required by the API)."""
+        """Run a reasoning query (``query_type`` is required by the API;
+        ``parameters`` is a list of strings, modules/nexus/router.py ReasonRequest)."""
         return run(
             self._t,
             _Op(
@@ -224,7 +225,7 @@ class NexusNamespace:
                 compact(
                     {
                         "query_type": query_type,
-                        "parameters": parameters or {},
+                        "parameters": list(parameters or []),
                         "perception_id": perception_id,
                         "timeout_secs": timeout_secs,
                     }
@@ -310,11 +311,12 @@ class AsyncNexusNamespace:
     async def reason(
         self,
         query_type: str,
-        parameters: Optional[Dict[str, Any]] = None,
+        parameters: Optional[List[str]] = None,
         perception_id: Optional[str] = None,
         timeout_secs: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Run a reasoning query (``query_type`` is required by the API)."""
+        """Run a reasoning query (``query_type`` is required by the API;
+        ``parameters`` is a list of strings, modules/nexus/router.py ReasonRequest)."""
         return await arun(
             self._t,
             _Op(
@@ -323,7 +325,7 @@ class AsyncNexusNamespace:
                 compact(
                     {
                         "query_type": query_type,
-                        "parameters": parameters or {},
+                        "parameters": list(parameters or []),
                         "perception_id": perception_id,
                         "timeout_secs": timeout_secs,
                     }

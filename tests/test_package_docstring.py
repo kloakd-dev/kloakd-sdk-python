@@ -1,4 +1,4 @@
-"""The quickstart in the package docstring runs against the 0.4.0 API."""
+"""The quickstart in the package docstring runs against the 0.5.0 API."""
 
 from __future__ import annotations
 

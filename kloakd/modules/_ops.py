@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Generic, List, Optional, TypeVar, cast, overload
+from urllib.parse import quote
 
 T = TypeVar("T")
 
@@ -68,6 +69,13 @@ def _Op(
     """``follow``: the route may hand off as a job (202); follow it to the
     result (kloakd/_handoff.py)."""
     return Op(method, path, body, params, parse or as_dict, follow)
+
+
+def seg(value: Any) -> str:
+    """One URL path segment, percent-encoded (``/`` and ``?`` included), as
+    encodeURIComponent does. The API decodes it before routing, so a value
+    such as an API endpoint URL arrives whole."""
+    return quote(str(value), safe="")
 
 
 def compact(values: Dict[str, Any]) -> Dict[str, Any]:

@@ -167,11 +167,7 @@ def async_client() -> AsyncKloakd:
 @pytest.mark.asyncio
 @pytest.mark.asyncio
 async def test_parlyr_chat_stream_yields_events(async_client: AsyncKloakd) -> None:
-    lines = _sse_event_lines(
-        ("intent", {"intent": "scrape_products", "confidence": 0.95, "tier": 1, "entities": {}, "requires_action": False}),
-        ("response", {"content": "I'll scrape products from example.com for you."}),
-        ("done", {}),
-    )
+    lines = _sse_event_lines(*CHAT_TURN, ("end", {}))
     mock_response = _MockAsyncStreamResponse(lines)
     mock_client = _make_async_http_client(mock_response)
 
@@ -181,22 +177,23 @@ async def test_parlyr_chat_stream_yields_events(async_client: AsyncKloakd) -> No
             async for event in events:
                 collected.append(event)
 
-    assert len(collected) == 3
-    assert collected[0].event == "intent"
-    assert collected[0].data["intent"] == "scrape_products"
-    assert collected[1].event == "response"
-    assert "example.com" in collected[1].data["content"]
-    assert collected[2].event == "done"
+    # The closing ``end`` is not yielded.
+    assert [e.type for e in collected] == ["thinking", "interpretation", "results", "text"]
+    assert collected[1].data == INTERPRETATION["data"]
+    assert collected[1].actions == INTERPRETATION["actions"]
+    assert collected[1].timestamp == INTERPRETATION["timestamp"]
+    assert collected[3].content == "Done: 2 books."
+    assert collected[3].event == "text"
 
 
 @pytest.mark.asyncio
 async def test_parlyr_chat_stream_skips_malformed_json(async_client: AsyncKloakd) -> None:
     lines = [
-        "event: intent",
+        "event: thinking",
         "data: NOT_JSON",
         "",
-        "event: response",
-        'data: {"content": "OK"}',
+        "event: text",
+        'data: {"type": "text", "content": "OK", "data": null, "actions": null, "timestamp": "t"}',
         "",
     ]
     mock_response = _MockAsyncStreamResponse(lines)
@@ -210,12 +207,12 @@ async def test_parlyr_chat_stream_skips_malformed_json(async_client: AsyncKloakd
 
     # malformed JSON line skipped
     assert len(collected) == 1
-    assert collected[0].event == "response"
+    assert (collected[0].type, collected[0].content) == ("text", "OK")
 
 
 @pytest.mark.asyncio
 async def test_parlyr_chat_stream_session_id_in_payload(async_client: AsyncKloakd) -> None:
-    lines = _sse_event_lines(("done", {}))
+    lines = _sse_event_lines(("end", {}))
     mock_response = _MockAsyncStreamResponse(lines)
     mock_client = _make_async_http_client(mock_response)
 
@@ -229,65 +226,124 @@ async def test_parlyr_chat_stream_session_id_in_payload(async_client: AsyncKloak
     assert call_kwargs[1]["json"]["message"] == "hello"
 
 
+@pytest.mark.asyncio
+async def test_async_parlyr_chat_collects_full_turn(async_client: AsyncKloakd) -> None:
+    mock_client = _make_async_http_client(
+        _MockAsyncStreamResponse(_sse_event_lines(*CHAT_TURN, ("end", {})))
+    )
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        turn = await async_client.parlyr.chat("sess-001", "Get books")
+    assert turn.interpretation == INTERPRETATION["data"]
+    assert turn.intent is None
+    assert turn.response == "Done: 2 books."
+    assert turn.results == [RESULTS["data"]]
+    assert turn.ok
+
+
 # ── parlyr.chat (sync SSE collector) ─────────────────────────────────────────
 
+# Payloads as kobe-scraper's ChatEvent.to_json() sends them
+# (application/services/chat_orchestrator.py), each under ``event: <type>``.
+def _chat(type_: str, content=None, data=None, actions=None) -> dict:
+    return {"type": type_, "content": content, "data": data, "actions": actions, "timestamp": "2026-10-28T10:00:00"}
+
+
+INTERPRETATION = _chat(
+    "interpretation",
+    "I'll extract books from https://books.toscrape.com.",
+    {"url": "https://books.toscrape.com", "entity": "books", "fields": ["title"], "limit": None, "summary": "Extract books from https://books.toscrape.com"},
+    [{"id": "start", "label": "Start Scraping", "primary": True}, {"id": "cancel", "label": "Cancel"}],
+)
+RESULTS = _chat("results", "Found 2 books.", {"records": [{"title": "A"}, {"title": "B"}], "total": 2})
+CHAT_TURN = [
+    ("thinking", _chat("thinking", "Understanding your request...")),
+    ("interpretation", INTERPRETATION),
+    ("results", RESULTS),
+    ("text", _chat("text", "Done: 2 books.")),
+]
+
+
 def test_parlyr_chat_collects_full_turn(client: Kloakd) -> None:
-    lines = _sse_event_lines(
-        ("intent", {"intent": "scrape_products", "confidence": 0.92, "tier": 1, "entities": {"url": "https://example.com"}, "requires_action": False}),
-        ("response", {"content": "I'll extract all product prices from example.com."}),
-        ("done", {}),
-    )
-    mock_response = _MockStreamResponse(lines)
-    mock_client = _make_sync_http_client(mock_response)
+    lines = _sse_event_lines(*CHAT_TURN, ("end", {}))
+    mock_client = _make_sync_http_client(_MockStreamResponse(lines))
 
     with patch("httpx.Client", return_value=mock_client):
-        result = client.parlyr.chat("sess-001", "Get all prices from example.com")
+        result = client.parlyr.chat("sess-001", "Get all books from books.toscrape.com")
 
     assert result.session_id == "sess-001"
-    assert result.intent == "scrape_products"
-    assert result.confidence == 0.92
-    assert result.tier == 1
-    assert "example.com" in result.response
-    assert result.requires_action is False
+    assert result.interpretation == INTERPRETATION["data"]
+    # chat_orchestrator.py's interpretation data has no intent key
+    assert result.intent is None
+    assert result.response == "Done: 2 books."
+    assert result.results == [RESULTS["data"]]
+    assert [e.type for e in result.events] == ["thinking", "interpretation", "results", "text"]
+    assert result.ok and result.errors == [] and result.warnings == []
 
 
-def test_parlyr_chat_handles_missing_intent_event(client: Kloakd) -> None:
-    """If no intent event arrives, ChatTurn uses safe defaults."""
+def test_parlyr_chat_joins_text_and_clarification(client: Kloakd) -> None:
     lines = _sse_event_lines(
-        ("response", {"content": "Here you go."}),
-        ("done", {}),
+        ("clarification", _chat("clarification", "Which site?")),
+        ("text", _chat("text", "Give me a URL.")),
+        ("end", {}),
     )
-    mock_response = _MockStreamResponse(lines)
-    mock_client = _make_sync_http_client(mock_response)
-
+    mock_client = _make_sync_http_client(_MockStreamResponse(lines))
     with patch("httpx.Client", return_value=mock_client):
         result = client.parlyr.chat("sess-002", "hello")
+    assert result.response == "Which site?\nGive me a URL."
+    assert result.interpretation is None and result.intent is None
 
-    assert result.intent == "unknown"
-    assert result.confidence == 0.0
-    assert result.response == "Here you go."
+
+def test_parlyr_chat_surfaces_an_error_event(client: Kloakd) -> None:
+    lines = _sse_event_lines(
+        ("warning", _chat("warning", "That is a lot of pages", {"level": "warn"})),
+        ("error", _chat("error", "Scraping failed: timeout", {"error": "timeout", "job_id": "j1"}, [{"id": "retry", "label": "Retry"}])),
+        ("end", {}),
+    )
+    mock_client = _make_sync_http_client(_MockStreamResponse(lines))
+    with patch("httpx.Client", return_value=mock_client):
+        result = client.parlyr.chat("sess-003", "scrape")
+    assert not result.ok
+    assert [e.content for e in result.errors] == ["Scraping failed: timeout"]
+    assert result.errors[0].data == {"error": "timeout", "job_id": "j1"}
+    assert [e.content for e in result.warnings] == ["That is a lot of pages"]
+
+
+def test_parlyr_chat_reads_an_intent_key_when_present(client: Kloakd) -> None:
+    lines = _sse_event_lines(("interpretation", _chat("interpretation", "x", {"intent": "scrape"})), ("end", {}))
+    mock_client = _make_sync_http_client(_MockStreamResponse(lines))
+    with patch("httpx.Client", return_value=mock_client):
+        result = client.parlyr.chat("s", "m")
+    assert result.intent == "scrape"
 
 
 def test_parlyr_chat_skips_malformed_json(client: Kloakd) -> None:
     lines = [
-        "event: intent",
+        "event: interpretation",
         "data: BROKEN",
         "",
-        "event: response",
-        '  data: {"content": "Done."}',
+        "event: text",
+        '  data: {"type": "text", "content": "Done.", "data": null, "actions": null, "timestamp": "t"}',
         "",
     ]
-    mock_response = _MockStreamResponse(lines)
-    mock_client = _make_sync_http_client(mock_response)
+    mock_client = _make_sync_http_client(_MockStreamResponse(lines))
 
     with patch("httpx.Client", return_value=mock_client):
         result = client.parlyr.chat("sess-003", "hi")
 
-    assert result.intent == "unknown"
+    assert result.interpretation is None
+    assert result.response == "Done."
+
+
+def test_parlyr_chat_stream_stops_at_end(client: Kloakd) -> None:
+    lines = _sse_event_lines(("text", _chat("text", "a")), ("end", {}), ("text", _chat("text", "late")))
+    mock_client = _make_sync_http_client(_MockStreamResponse(lines))
+    with patch("httpx.Client", return_value=mock_client):
+        out = list(client.parlyr.chat_stream("s", "m"))
+    assert [e.content for e in out] == ["a"]
 
 
 def test_parlyr_chat_payload_contains_session_and_message(client: Kloakd) -> None:
-    lines = _sse_event_lines(("done", {}))
+    lines = _sse_event_lines(("end", {}))
     mock_response = _MockStreamResponse(lines)
     mock_client = _make_sync_http_client(mock_response)
 
@@ -299,7 +355,6 @@ def test_parlyr_chat_payload_contains_session_and_message(client: Kloakd) -> Non
     assert call_kwargs[1]["json"]["message"] == "my message"
 
 
-
 def _sse(*payloads: dict) -> str:
     return "".join(f"data: {json.dumps(p)}\n\n" for p in payloads) + ": keepalive\n\ndata: {not json}\n\n"
 
@@ -308,11 +363,21 @@ def _sse(*payloads: dict) -> str:
 def test_evadr_fetch_stream_starts_a_job_and_reads_its_events(client: Kloakd) -> None:
     respx.post(f"{TEST_BASE_URL}{ORG_PREFIX}/evadr/fetch/async").mock(return_value=Response(202, json={"job_id": "j1", "status": "pending", "message": ""}))
     events = respx.get(f"{TEST_BASE_URL}{ORG_PREFIX}/evadr/jobs/j1/events").mock(
-        return_value=Response(200, text=_sse({"event_type": "TIER_STARTED", "tier": 1}), headers={"content-type": "text/event-stream"})
+        return_value=Response(200, text=_sse(
+            # core/pipeline/models.py PipelineEvent.to_dict()
+            {"pipeline_id": "j1", "event_type": "pipeline_step", "stage_id": "evadr.tier", "status": "in_progress", "phase": "discovery", "message": "Trying tier 1", "sub_status": None, "progress_pct": 20.0, "duration_ms": 5.0, "metadata": {"tier": 1}, "error": None, "timestamp": "t", "sequence": 3},
+            # modules/evadr/router.py job-state fallback
+            {"type": "COMPLETE", "job_id": "j1", "tier_used": 2, "artifact_id": "art-1"},
+            {"type": "FAILED", "job_id": "j1", "error": "blocked"},
+        ), headers={"content-type": "text/event-stream"})
     )
     out = list(client.evadr.fetch_stream("https://example.com"))
-    assert [e.type for e in out] == ["TIER_STARTED"]
-    assert out[0].tier == 1
+    assert [e.type for e in out] == ["pipeline_step", "COMPLETE", "FAILED"]
+    step, done, failed = out
+    assert (step.stage_id, step.status, step.message, step.progress_pct, step.sequence) == ("evadr.tier", "in_progress", "Trying tier 1", 20.0, 3)
+    assert step.metadata == {"tier": 1} and step.job_id == "j1"
+    assert (done.tier_used, done.artifact_id, done.job_id) == (2, "art-1", "j1")
+    assert failed.error == "blocked"
     assert events.calls.last.request.headers["authorization"].startswith("Bearer sk-")
 
 

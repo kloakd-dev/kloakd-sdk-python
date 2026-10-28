@@ -63,12 +63,22 @@ class TestErrorMapping:
         with pytest.raises(AuthenticationError):
             _HttpTransport._raise_for_status(401, b'{"detail": "bad key"}')
 
-    def test_raise_for_status_403(self) -> None:
+    def test_raise_for_status_403_not_entitled(self) -> None:
         import json
-        body = json.dumps({"detail": "forbidden", "module": "fetchyr"}).encode()
+        # kernel/gateway/errors.py NotEntitledError.to_dict()
+        body = json.dumps({"detail": {"error": "not_entitled", "message": "no", "module": "fetchyr", "upgrade_url": "u"}}).encode()
         with pytest.raises(NotEntitledError) as exc_info:
             _HttpTransport._raise_for_status(403, body)
         assert exc_info.value.module == "fetchyr"
+        assert exc_info.value.code == "not_entitled"
+
+    def test_raise_for_status_403_other_is_permission_denied(self) -> None:
+        from kloakd import ForbiddenError
+        with pytest.raises(ForbiddenError) as exc_info:
+            _HttpTransport._raise_for_status(403, b'{"detail": "Access denied"}')
+        assert exc_info.value.status_code == 403
+        assert "Access denied" in exc_info.value.message
+        assert not isinstance(exc_info.value, NotEntitledError)
 
     def test_raise_for_status_429(self) -> None:
         import json

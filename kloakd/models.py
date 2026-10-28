@@ -9,7 +9,7 @@ serialised to dict via dataclasses.asdict() or inspected directly.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 # ---------------------------------------------------------------------------
 # Evadr — Anti-Bot Intelligence
@@ -18,7 +18,11 @@ from typing import Any, Dict, List, Optional
 
 @dataclass
 class FetchResult:
-    """Result of an Evadr fetch operation."""
+    """Result of an Evadr fetch operation.
+
+    ``html`` is None when the API sent none, for example when the target is
+    a login page (``auth_required``); then ``discovery_id`` names the
+    auth-chain discovery (``fetchyr.get_auth_chain_status``)."""
 
     success: bool
     url: str
@@ -29,6 +33,10 @@ class FetchResult:
     anti_bot_bypassed: bool = False
     artifact_id: Optional[str] = None
     error: Optional[str] = None
+    #: True when a login page was detected at the target URL.
+    auth_required: bool = False
+    #: The auth-chain discovery id when ``auth_required`` is true.
+    discovery_id: Optional[str] = None
 
     @property
     def ok(self) -> bool:
@@ -38,12 +46,29 @@ class FetchResult:
 
 @dataclass
 class FetchEvent:
-    """A single server-sent event from an Evadr async fetch stream."""
+    """A single server-sent event from an Evadr fetch job's stream.
+
+    The API sends pipeline events (``type`` is ``pipeline_step``,
+    ``pipeline_error`` or ``pipeline_complete``, with ``stage_id``,
+    ``status``, ``message``, ``progress_pct``, ``metadata``, ``error`` and
+    ``sequence``; kobe-scraper core/pipeline/models.py PipelineEvent), or,
+    when it cannot subscribe to them, job-state events (``type`` is
+    ``STATUS``, ``COMPLETE``, ``FAILED`` or ``ERROR``, with ``status``,
+    ``tier_used``, ``artifact_id`` and ``error``; modules/evadr/router.py).
+    """
 
     type: str
-    tier: Optional[int] = None
-    vendor: Optional[str] = None
+    stage_id: Optional[str] = None
+    status: Optional[str] = None
+    message: Optional[str] = None
+    progress_pct: Optional[float] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    #: A pipeline error object, or a job-state event's error string.
+    error: Optional[Union[str, Dict[str, Any]]] = None
+    sequence: Optional[int] = None
+    job_id: Optional[str] = None
+    tier_used: Optional[int] = None
+    artifact_id: Optional[str] = None
 
 
 @dataclass
@@ -97,7 +122,14 @@ class CrawlResult:
 
 @dataclass
 class CrawlEvent:
-    """A single server-sent event from a Webgrph crawl stream."""
+    """A single server-sent event from a Webgrph crawl stream.
+
+    The API sends pipeline events (kobe-scraper core/pipeline/models.py
+    PipelineEvent): ``type`` is its ``event_type`` (``pipeline_step``,
+    ``pipeline_error`` or ``pipeline_complete``). ``url``, ``pages_found``,
+    ``total_pages`` and ``artifact_id`` are read from the event or its
+    ``metadata`` when present.
+    """
 
     type: str
     url: Optional[str] = None
@@ -109,6 +141,10 @@ class CrawlEvent:
     sub_status: Optional[str] = None
     progress_pct: Optional[float] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    status: Optional[str] = None
+    message: Optional[str] = None
+    error: Optional[Union[str, Dict[str, Any]]] = None
+    sequence: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------
@@ -281,24 +317,58 @@ class ParseResult:
 
 @dataclass
 class ChatEvent:
-    """A single server-sent event from a Parlyr chat stream."""
+    """A single server-sent event from a Parlyr chat stream.
 
-    event: str
-    data: Dict[str, Any] = field(default_factory=dict)
+    ``type`` is one of thinking, interpretation, progress, results, error,
+    warning, auth_required, mfa_required, clarification, export_ready or
+    text (kobe-scraper application/services/chat_orchestrator.py
+    ChatEventType). The stream's closing ``end`` event is not yielded.
+    """
+
+    type: str
+    content: Optional[str] = None
+    data: Optional[Dict[str, Any]] = None
+    #: Suggested next steps, ``[{"id", "label", "primary"?}]``.
+    actions: Optional[List[Dict[str, Any]]] = None
+    timestamp: Optional[str] = None
+
+    @property
+    def event(self) -> str:
+        """The SSE event name (the same as ``type``)."""
+        return self.type
 
 
 @dataclass
 class ChatTurn:
-    """The fully-assembled result of one Parlyr chat turn."""
+    """The fully-assembled result of one Parlyr chat turn.
+
+    Attributes:
+        response: The ``content`` of the turn's ``text`` and
+            ``clarification`` events, joined by newlines.
+        intent: ``interpretation.get("intent")``. The API's interpretation
+            events carry no intent key today (kobe-scraper
+            application/services/chat_orchestrator.py), so this is usually
+            None; the plan itself is ``interpretation``.
+        interpretation: The ``data`` of the last ``interpretation`` event
+            (``url``, ``entity``, ``fields``, ``summary``, …), or None.
+        results: The ``data`` of each ``results`` event.
+        errors: The turn's ``error`` events (not raised; ``ok`` is False).
+        warnings: The turn's ``warning`` events.
+        events: Every event of the turn, in order.
+    """
 
     session_id: str
-    intent: str
-    confidence: float
-    tier: int
-    response: str
-    entities: Dict[str, Any] = field(default_factory=dict)
-    requires_action: bool = False
-    clarification_needed: Optional[str] = None
+    response: str = ""
+    intent: Optional[str] = None
+    interpretation: Optional[Dict[str, Any]] = None
+    results: List[Dict[str, Any]] = field(default_factory=list)
+    errors: List[ChatEvent] = field(default_factory=list)
+    warnings: List[ChatEvent] = field(default_factory=list)
+    events: List[ChatEvent] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return not self.errors
 
 
 # ---------------------------------------------------------------------------
@@ -426,6 +496,10 @@ class ExtractionResult:
     has_more: bool = False
     total: int = 0
     error: Optional[str] = None
+    #: True when a login page was detected at the target URL.
+    auth_required: bool = False
+    #: The auth-chain discovery id when ``auth_required`` is true.
+    discovery_id: Optional[str] = None
 
     @property
     def ok(self) -> bool:

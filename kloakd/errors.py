@@ -31,12 +31,20 @@ class KloakdError(Exception):
     Attributes:
         message: Human-readable error description.
         status_code: HTTP status code from the API, or None for client-side errors.
+        code: The API's error code (``detail.error``, e.g. ``rate_limited``,
+            ``not_entitled``), or None when it sent none.
     """
 
-    def __init__(self, message: str, status_code: Optional[int] = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        status_code: Optional[int] = None,
+        code: Optional[str] = None,
+    ) -> None:
         super().__init__(message)
         self.message = message
         self.status_code = status_code
+        self.code = code
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(status_code={self.status_code!r}, message={self.message!r})"
@@ -54,13 +62,31 @@ class AuthenticationError(KloakdError):
         super().__init__(message, status_code=401)
 
 
-class NotEntitledError(KloakdError):
+class ForbiddenError(KloakdError):
     """
-    Raised when the tenant's plan does not include the requested module (HTTP 403).
+    Raised for HTTP 403. This class itself is a 403 that is not a plan
+    restriction: the key or user may not access this resource (for example
+    another organisation's). Plan restrictions raise its subclass
+    NotEntitledError.
+    """
+
+    def __init__(self, message: str, code: Optional[str] = None) -> None:
+        super().__init__(message, status_code=403, code=code)
+
+
+class NotEntitledError(ForbiddenError):
+    """
+    Raised when the plan does not include the requested module or feature
+    (HTTP 403 ``not_entitled`` or ``tier_access_denied``).
 
     Attributes:
-        module: The module name that requires a higher plan (e.g. "fetchyr").
+        module: The module that requires a higher plan (e.g. "fetchyr"); for
+            ``tier_access_denied`` the feature the tier lacks.
         upgrade_url: Direct URL to upgrade your plan.
+        code: ``not_entitled`` or ``tier_access_denied``.
+        feature: The feature the tier lacks (``tier_access_denied`` only).
+        current_tier: The organisation's tier (``tier_access_denied`` only).
+        required_tier: The tier the feature needs (``tier_access_denied`` only).
     """
 
     def __init__(
@@ -68,10 +94,17 @@ class NotEntitledError(KloakdError):
         message: str,
         module: str = "unknown",
         upgrade_url: str = "",
+        code: str = "not_entitled",
+        feature: Optional[str] = None,
+        current_tier: Optional[str] = None,
+        required_tier: Optional[str] = None,
     ) -> None:
-        super().__init__(message, status_code=403)
+        super().__init__(message, code=code)
         self.module = module
         self.upgrade_url = upgrade_url
+        self.feature = feature
+        self.current_tier = current_tier
+        self.required_tier = required_tier
 
     def __repr__(self) -> str:
         return (
@@ -82,12 +115,18 @@ class NotEntitledError(KloakdError):
 
 class RateLimitError(KloakdError):
     """
-    Raised when the request rate limit is exceeded (HTTP 429).
+    Raised when the request rate limit is exceeded (HTTP 429 ``rate_limited``).
 
     Attributes:
         retry_after: Seconds to wait before retrying. The SDK's built-in
-            retry logic honours this automatically on the first 429.
+            retry logic honours this (or ``reset_at``) automatically.
         reset_at: ISO 8601 timestamp when the rate limit window resets.
+        quota_exhausted: True for the playground (test-key) quota, which
+            does not reset: the API sends ``retry_after`` 0 and no
+            ``reset_at`` (kobe-scraper kernel/gateway/rate_limiter.py), and
+            the SDK does not retry.
+        quota_used, quota_limit: The playground quota's use and size.
+        upgrade_url: Where to upgrade (playground quota only).
     """
 
     def __init__(
@@ -95,16 +134,51 @@ class RateLimitError(KloakdError):
         message: str,
         retry_after: int = 0,
         reset_at: str = "",
+        quota_used: Optional[int] = None,
+        quota_limit: Optional[int] = None,
+        upgrade_url: Optional[str] = None,
     ) -> None:
-        super().__init__(message, status_code=429)
+        super().__init__(message, status_code=429, code="rate_limited")
         self.retry_after = retry_after
         self.reset_at = reset_at
+        self.quota_used = quota_used
+        self.quota_limit = quota_limit
+        self.upgrade_url = upgrade_url
+
+    @property
+    def quota_exhausted(self) -> bool:
+        """True for the playground quota: no wait will lift it (not retried)."""
+        return self.retry_after <= 0 and not self.reset_at
 
     def __repr__(self) -> str:
         return (
             f"RateLimitError(retry_after={self.retry_after!r}, "
             f"reset_at={self.reset_at!r}, message={self.message!r})"
         )
+
+
+class ConcurrencyLimitError(KloakdError):
+    """
+    Raised when the organisation already runs as many crawls or jobs as its
+    tier allows (HTTP 409 ``concurrent_limit``). Retry once one finishes.
+
+    Attributes:
+        concurrent_limit: The number allowed at once.
+        active_crawls: How many are running (tier limit only).
+        tier: The organisation's tier (tier limit only).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        concurrent_limit: Optional[int] = None,
+        active_crawls: Optional[int] = None,
+        tier: Optional[str] = None,
+    ) -> None:
+        super().__init__(message, status_code=409)
+        self.concurrent_limit = concurrent_limit
+        self.active_crawls = active_crawls
+        self.tier = tier
 
 
 class UpstreamError(KloakdError):
@@ -175,7 +249,11 @@ class JobFailedError(KloakdError):
 
 
 class JobTimeoutError(KloakdError):
-    """Raised when a job was still running when the SDK's wait ran out; poll it later by ``job_id``."""
+    """Raised when a job was still running when the SDK's wait ran out.
+
+    Resume with ``client.wait_for_handoff(e.job_id)`` (a handed-off request),
+    ``client.evadr.wait_for_job(e.job_id)`` (a fetch job) or
+    ``client.webgrph.get_crawl_status(e.job_id)`` (a crawl)."""
 
     def __init__(self, message: str, job_id: str) -> None:
         super().__init__(message, status_code=None)
