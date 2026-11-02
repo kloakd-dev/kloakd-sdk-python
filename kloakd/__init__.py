@@ -17,6 +17,7 @@ Quickstart::
     data = client.kolektr.page(
         "https://books.toscrape.com",
         schema={"title": "css:h3 a", "price": "css:p.price_color"},
+        item_selector="article.product_pod",  # one record per book
         fetch_artifact_id=fetch.artifact_id,
     )
     for record in data.records[:3]:
@@ -69,13 +70,16 @@ from kloakd.models import (
     NexusVerifyResult,
     PageNode,
     ParseResult,
+    SchemaField,
+    SchemaSpec,
     SessionResult,
     SiteCrawlResult,
     WorkflowExecutionResult,
     WorkflowResult,
 )
+from kloakd.modules.kolektr import schema_spec
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 __all__ = [
     # Clients
     "Kloakd",
@@ -126,4 +130,7 @@ __all__ = [
     "DuplicateCheckResult",
     # Kolektr models
     "ExtractionResult",
+    "SchemaField",
+    "SchemaSpec",
+    "schema_spec",
 ]

@@ -1,4 +1,17 @@
-# Routes the SDK calls (0.5.0)
+# Routes the SDK calls (0.6.0)
+
+## Changed in 0.6.0
+
+Checked against kobe-scraper main 1c74de2b (deployed 0bb0c6b5, 2 November
+2026). No route was added or removed.
+
+| Method | Path | 0.6.0 |
+|---|---|---|
+| POST | kolektr/extract, kolektr/extract/html | `schema_spec.item_selector` (`item_selector=` on `page`, `page_all`, `extract_html`); fields may carry `attribute` and `type` (`modules/kolektr/router.py` SchemaSpec, GAP-API-11) |
+| GET | webgrph/crawl/{crawl_id}/pages | `include_grouping` (sent as `true` only when asked); `limit` checked 1-1000 and `cursor` checked as a non-negative integer before the request; nodes read for `parent_url` and `metadata.is_grouping` (`modules/webgrph/router.py` get_crawl_pages, GAP-API-9/10) |
+| * | every metered route | 409 `concurrent_limit` read for `active_requests` as well (`kernel/gateway/dependencies.py` hold_work_slot, GAP-BILL-13); not retried |
+
+# Routes the SDK called in 0.5.0
 
 ## Changed in 0.5.0
 

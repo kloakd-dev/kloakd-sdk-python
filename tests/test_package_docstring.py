@@ -1,4 +1,4 @@
-"""The quickstart in the package docstring runs against the 0.5.0 API."""
+"""The quickstart in the package docstring runs against the 0.6.0 API."""
 
 from __future__ import annotations
 
@@ -24,3 +24,4 @@ def test_the_quickstart_runs(capsys: object) -> None:
     body = json.loads(extract.calls.last.request.content)
     assert body["fetch_artifact_id"] == "art-1"
     assert body["schema_spec"]["fields"][0] == {"name": "title", "selector": "h3 a"}
+    assert body["schema_spec"]["item_selector"] == "article.product_pod"

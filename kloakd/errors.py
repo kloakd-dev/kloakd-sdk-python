@@ -159,12 +159,20 @@ class RateLimitError(KloakdError):
 
 class ConcurrencyLimitError(KloakdError):
     """
-    Raised when the organisation already runs as many crawls or jobs as its
-    tier allows (HTTP 409 ``concurrent_limit``). Retry once one finishes.
+    Raised when every one of the organisation's work slots is in use
+    (HTTP 409 ``concurrent_limit``). Not retried by the SDK: retry once a
+    running call, crawl or batch finishes.
+
+    Every metered call (a fetch, an extraction, a crawl start, ...) holds one
+    slot while it runs; crawls and batches hold theirs until they end. The
+    slots per plan (kobe-scraper kernel/gateway/dependencies.py
+    ``_TIER_CONCURRENT_LIMITS``): Free 2, Starter 5, Pro 10, Pro+ 20,
+    Developer 50, Enterprise 100.
 
     Attributes:
-        concurrent_limit: The number allowed at once.
-        active_crawls: How many are running (tier limit only).
+        concurrent_limit: The number of slots the plan has.
+        active_crawls: Crawls and batches running or queued (tier limit only).
+        active_requests: Other calls in flight (tier limit only; new in 0.6.0).
         tier: The organisation's tier (tier limit only).
     """
 
@@ -174,11 +182,21 @@ class ConcurrencyLimitError(KloakdError):
         concurrent_limit: Optional[int] = None,
         active_crawls: Optional[int] = None,
         tier: Optional[str] = None,
+        active_requests: Optional[int] = None,
     ) -> None:
         super().__init__(message, status_code=409)
         self.concurrent_limit = concurrent_limit
         self.active_crawls = active_crawls
         self.tier = tier
+        self.active_requests = active_requests
+
+    def __repr__(self) -> str:
+        return (
+            f"ConcurrencyLimitError(tier={self.tier!r}, "
+            f"concurrent_limit={self.concurrent_limit!r}, "
+            f"active_crawls={self.active_crawls!r}, "
+            f"active_requests={self.active_requests!r}, message={self.message!r})"
+        )
 
 
 class UpstreamError(KloakdError):

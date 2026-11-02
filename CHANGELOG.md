@@ -8,6 +8,25 @@ Format: [Semantic Versioning](https://semver.org/). Types: `Added`, `Changed`, `
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-11-03
+
+For the API deployed on 2 November 2026 (kobe-scraper 0bb0c6b5). Backward
+compatible with 0.5.0: without the new arguments every request is the same
+as before. `ROUTES.md` lists the calls that changed.
+
+### Added
+- `item_selector` on `kolektr.page`, `page_all` and `extract_html` (sync and async), sent as `schema_spec.item_selector`: one record per element it matches, each field read inside that element (first match, every match for `type: "list"`, the named `attribute`, `None` when nothing matches, the item element itself for a field without a selector). Works with the shorthand, a list of fields and a full spec. An empty `item_selector` or one without fields raises `ValueError` (the API answers 422).
+- `kloakd.schema_spec(schema, item_selector=None)`, which builds the full spec (for example for `client.crawl(extract_schema=...)`), and the `SchemaSpec` / `SchemaField` TypedDicts.
+- `include_grouping` on `webgrph.get_crawl_pages` and `crawl_all_pages` (sync and async), and `limit` on `crawl_all_pages`. Without it only fetched pages are listed, as the API now does by default.
+- `PageNode.parent_url`, `is_grouping` and `crawl_parent_url` (the last from stored page dicts only; the pages listing does not send it).
+- `ConcurrencyLimitError.active_requests` (409 `concurrent_limit` from the work-slot limit: Free 2, Starter 5, Pro 10, Pro+ 20, Developer 50, Enterprise 100) and a `repr` with all its fields.
+
+### Changed
+- `webgrph.get_crawl_pages` raises `ValueError` for a `limit` outside 1-1000 or a `cursor` that is not a non-negative integer, instead of sending a request the API answers with 422.
+- In the shorthand, the `css:` prefix is also removed from a dict value's `selector` (`{"title": {"selector": "css:h3 a"}}`).
+- `CrawlResult.total_pages` and `max_depth_reached` count fetched pages only (the API's change; documented).
+- `User-Agent: kloakd-sdk-python/0.6.0`.
+
 ## [0.5.0] — 2026-10-28
 
 Fixes from an audit against kobe-scraper e5f15f7d. Several are breaking,

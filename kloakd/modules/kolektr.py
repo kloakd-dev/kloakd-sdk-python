@@ -13,6 +13,13 @@ Usage::
         schema={"title": "css:h3 a", "price": "css:p.price_color"},
     )
 
+    # One record per book on a list page (item_selector, new in 0.6.0)
+    books = client.kolektr.page(
+        "https://books.toscrape.com",
+        schema={"title": "css:h3 a", "price": "css:p.price_color"},
+        item_selector="article.product_pod",
+    )
+
     # Reuse Evadr artifact — no double-fetch
     fetch = client.evadr.fetch("https://protected.example.com")
     result = client.kolektr.page(
@@ -28,11 +35,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
-from kloakd.models import ExtractionResult
+from kloakd.models import ExtractionResult, SchemaField, SchemaSpec
 from kloakd.modules._ops import as_dict, compact, seg
 
 if TYPE_CHECKING:
     from kloakd._http import _AsyncHttpTransport, _HttpTransport
+
+#: What ``schema`` accepts: the shorthand ``{field: "css:selector"}``, a list
+#: of fields, or a full ``schema_spec``.
+SchemaInput = Union[SchemaSpec, Dict[str, Any], List[SchemaField], List[Dict[str, Any]]]
 
 
 def _selector(value: str) -> str:
@@ -40,26 +51,80 @@ def _selector(value: str) -> str:
     return value[4:].strip() if value.startswith("css:") else value
 
 
-def _build_schema_spec(schema: Any) -> Dict[str, Any]:
-    """The API's ``schema_spec`` (modules/kolektr/router.py SchemaSpec):
+def _field(name: str, value: Any) -> Dict[str, Any]:
+    """One shorthand entry as an API field (``css:`` prefix optional)."""
+    if isinstance(value, str):
+        return {"name": name, "selector": _selector(value)}
+    out: Dict[str, Any] = {"name": name, **value}
+    if isinstance(out.get("selector"), str):
+        out["selector"] = _selector(out["selector"])
+    return out
 
-    - a full spec (a dict with a ``fields`` list) is sent as given;
-    - a list of fields ``[{"name", "selector", ...}]`` becomes ``{"fields": [...]}``;
-    - the shorthand ``{field: "css:selector"}`` (prefix optional) is
-      converted to ``{"fields": [{"name": field, "selector": selector}]}``.
+
+def schema_spec(
+    schema: SchemaInput,
+    item_selector: Optional[str] = None,
+) -> Dict[str, Any]:
+    """The API's ``schema_spec`` (kobe-scraper modules/kolektr/router.py SchemaSpec).
+
+    ``schema`` may be:
+
+    - a full spec (a dict with a ``fields`` list), sent as given;
+    - a list of fields ``[{"name", "selector", "attribute", "type"}]``;
+    - the shorthand ``{field: "css:selector"}`` (prefix optional), where a
+      value may also be a dict ``{"selector": ..., "attribute": ..., "type": ...}``.
+
+    ``item_selector`` (CSS, new in 0.6.0) makes one record per element it
+    matches on a list page; each field's selector is then read inside that
+    element: the first match gives the value (every match when the field's
+    ``type`` is ``"list"``), its text or the named ``attribute``; a field
+    with no match in an item is ``None``; a field without a selector is read
+    from the item element itself. Without it the field selectors run against
+    the whole page and give one record, as before.
+
+    Use it to build a spec for ``client.crawl(extract_schema=...)``::
+
+        spec = schema_spec({"title": "css:h3 a", "price": "p.price_color"},
+                           item_selector="article.product_pod")
+
+    Raises:
+        ValueError: ``item_selector`` is empty, there are no fields to read
+            inside the items, or it differs from the one already in a full
+            spec. The API answers these with 422; an invalid CSS selector is
+            reported by the API (422, ``ApiError``).
     """
     if isinstance(schema, list):
-        return {"fields": list(schema)}
-    if isinstance(schema.get("fields"), list):
-        return dict(schema)
-    return {
-        "fields": [
-            {"name": k, "selector": _selector(v)}
-            if isinstance(v, str)
-            else {"name": k, **v}
-            for k, v in schema.items()
-        ]
-    }
+        spec: Dict[str, Any] = {"fields": list(schema)}
+    elif isinstance(schema.get("fields"), list):
+        spec = dict(schema)
+    else:
+        spec = {"fields": [_field(k, v) for k, v in schema.items()]}
+    if item_selector is not None:
+        item_selector = item_selector.strip()
+        if not item_selector:
+            raise ValueError("item_selector must not be empty")
+        given = spec.get("item_selector")
+        if given is not None and given != item_selector:
+            raise ValueError(
+                f"item_selector {item_selector!r} differs from the spec's {given!r}"
+            )
+        spec["item_selector"] = item_selector
+    if spec.get("item_selector") is not None and not spec.get("fields"):
+        raise ValueError("item_selector needs at least one field")
+    return spec
+
+
+# 0.5.0 name, kept for compatibility.
+_build_schema_spec = schema_spec
+
+
+def _body_schema(
+    body: Dict[str, Any], schema: Optional[SchemaInput], item_selector: Optional[str]
+) -> None:
+    if schema:
+        body["schema_spec"] = schema_spec(schema, item_selector)
+    elif item_selector is not None:
+        raise ValueError("item_selector needs a schema with at least one field")
 
 
 def _api_data_path(api_endpoint: str, suffix: str = "") -> str:
@@ -96,12 +161,13 @@ class KolektrNamespace:
     def page(
         self,
         url: str,
-        schema: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
+        schema: Optional[SchemaInput] = None,
         fetch_artifact_id: Optional[str] = None,
         session_artifact_id: Optional[str] = None,
         api_map_artifact_id: Optional[str] = None,
         options: Optional[Dict[str, Any]] = None,
         level: Optional[str] = None,
+        item_selector: Optional[str] = None,
     ) -> ExtractionResult:
         """
         Extract structured data from a URL.
@@ -120,8 +186,22 @@ class KolektrNamespace:
 
         or a list of fields ``[{"name": "title", "selector": "h1",
         "attribute": None, "type": "text"}]``, or a full ``schema_spec``
-        dict with ``fields`` (and ``pagination``, ``max_pages``,
-        ``output_format``).
+        dict with ``fields`` (and ``item_selector``, ``pagination``,
+        ``max_pages``, ``output_format``).
+
+        List pages: ``item_selector`` gives one record per repeated item,
+        with each field read inside the item (see ``schema_spec``)::
+
+            result = client.kolektr.page(
+                "https://books.toscrape.com",
+                schema={
+                    "title": {"selector": "h3 a", "attribute": "title"},
+                    "price": "css:p.price_color",
+                },
+                item_selector="article.product_pod",
+            )
+            # result.records == [{"title": "A Light in the Attic",
+            #                     "price": "£51.77"}, ...]  (one per book)
 
         Args:
             url: Target URL.
@@ -131,6 +211,8 @@ class KolektrNamespace:
             api_map_artifact_id: API_MAP artifact from Skanyr.
             options: Additional extraction options.
             level: Extraction level to force (the API chooses when omitted).
+            item_selector: CSS selector for the repeated item (new in 0.6.0):
+                one record per match, fields read inside it. Needs ``schema``.
 
         Returns:
             ExtractionResult with records, total_records, and artifact_id.
@@ -138,8 +220,7 @@ class KolektrNamespace:
         body: Dict[str, Any] = {"url": url}
         if level:
             body["level"] = level
-        if schema:
-            body["schema_spec"] = _build_schema_spec(schema)
+        _body_schema(body, schema, item_selector)
         if fetch_artifact_id:
             body["fetch_artifact_id"] = fetch_artifact_id
         if session_artifact_id:
@@ -155,10 +236,11 @@ class KolektrNamespace:
     def page_all(
         self,
         url: str,
-        schema: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
+        schema: Optional[SchemaInput] = None,
         fetch_artifact_id: Optional[str] = None,
         session_artifact_id: Optional[str] = None,
         api_map_artifact_id: Optional[str] = None,
+        item_selector: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """All records of a page's extraction (the API returns them in one response)."""
         return self.page(
@@ -167,13 +249,15 @@ class KolektrNamespace:
             fetch_artifact_id=fetch_artifact_id,
             session_artifact_id=session_artifact_id,
             api_map_artifact_id=api_map_artifact_id,
+            item_selector=item_selector,
         ).records
 
     def extract_html(
         self,
         html: str,
         url: str,
-        schema: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
+        schema: Optional[SchemaInput] = None,
+        item_selector: Optional[str] = None,
     ) -> ExtractionResult:
         """
         Extract structured data from raw HTML (in-process, no HTTP fetch).
@@ -181,14 +265,15 @@ class KolektrNamespace:
         Args:
             html: Raw HTML string.
             url: Source URL (for metadata only).
-            schema: CSS selector schema dict.
+            schema: Shorthand dict, list of fields, or full schema_spec.
+            item_selector: CSS selector for the repeated item (new in 0.6.0),
+                as for ``page``.
 
         Returns:
             ExtractionResult with records.
         """
         body: Dict[str, Any] = {"html": html, "url": url}
-        if schema:
-            body["schema_spec"] = _build_schema_spec(schema)
+        _body_schema(body, schema, item_selector)
 
         raw = self._t.post("kolektr/extract/html", body)
         return _parse_extraction(raw, url)
@@ -322,19 +407,19 @@ class AsyncKolektrNamespace:
     async def page(
         self,
         url: str,
-        schema: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
+        schema: Optional[SchemaInput] = None,
         fetch_artifact_id: Optional[str] = None,
         session_artifact_id: Optional[str] = None,
         api_map_artifact_id: Optional[str] = None,
         options: Optional[Dict[str, Any]] = None,
         level: Optional[str] = None,
+        item_selector: Optional[str] = None,
     ) -> ExtractionResult:
         """Async equivalent of KolektrNamespace.page."""
         body: Dict[str, Any] = {"url": url}
         if level:
             body["level"] = level
-        if schema:
-            body["schema_spec"] = _build_schema_spec(schema)
+        _body_schema(body, schema, item_selector)
         if fetch_artifact_id:
             body["fetch_artifact_id"] = fetch_artifact_id
         if session_artifact_id:
@@ -350,10 +435,11 @@ class AsyncKolektrNamespace:
     async def page_all(
         self,
         url: str,
-        schema: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
+        schema: Optional[SchemaInput] = None,
         fetch_artifact_id: Optional[str] = None,
         session_artifact_id: Optional[str] = None,
         api_map_artifact_id: Optional[str] = None,
+        item_selector: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Async equivalent of KolektrNamespace.page_all."""
         result = await self.page(
@@ -362,6 +448,7 @@ class AsyncKolektrNamespace:
             fetch_artifact_id=fetch_artifact_id,
             session_artifact_id=session_artifact_id,
             api_map_artifact_id=api_map_artifact_id,
+            item_selector=item_selector,
         )
         return result.records
 
@@ -369,12 +456,12 @@ class AsyncKolektrNamespace:
         self,
         html: str,
         url: str,
-        schema: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
+        schema: Optional[SchemaInput] = None,
+        item_selector: Optional[str] = None,
     ) -> ExtractionResult:
         """Async equivalent of KolektrNamespace.extract_html."""
         body: Dict[str, Any] = {"html": html, "url": url}
-        if schema:
-            body["schema_spec"] = _build_schema_spec(schema)
+        _body_schema(body, schema, item_selector)
 
         raw = await self._t.post("kolektr/extract/html", body)
         return _parse_extraction(raw, url)

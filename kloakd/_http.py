@@ -48,7 +48,7 @@ logger = logging.getLogger("kloakd.http")
 
 _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 _IDEMPOTENT_METHODS = {"GET", "HEAD", "DELETE"}
-_SDK_VERSION = "0.5.0"
+_SDK_VERSION = "0.6.0"
 _MAX_WAIT = 60.0
 
 
@@ -223,12 +223,14 @@ def _mapped(
             )
         return ForbiddenError(f"Forbidden: {detail}", code=code or None)
     if status_code == 409 and code == "concurrent_limit":
-        # kernel/gateway/dependencies.py check_concurrent_quota
+        # kernel/gateway/dependencies.py hold_work_slot (tier limit) and
+        # check_concurrent_quota (playground test keys). Never retried.
         return ConcurrencyLimitError(
             str(detail),
             concurrent_limit=_int_or_none(detail_obj.get("concurrent_limit")),
             active_crawls=_int_or_none(detail_obj.get("active_crawls")),
             tier=detail_obj.get("tier"),
+            active_requests=_int_or_none(detail_obj.get("active_requests")),
         )
     if status_code == 429:
         if code == "gb_exhausted":

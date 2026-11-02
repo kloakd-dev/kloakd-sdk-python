@@ -30,12 +30,18 @@ _FINISHED = ("completed", "failed", "cancelled")
 
 
 def _node(p: Dict[str, Any]) -> PageNode:
+    """A page node from the pages listing (HierarchyNode, ``metadata``) or a
+    stored page dict (flat ``is_grouping`` / ``crawl_parent_url``)."""
+    meta = p.get("metadata") or {}
     return PageNode(
         url=p.get("url", ""),
         depth=int(p.get("depth") or 0),
-        title=(p.get("metadata") or {}).get("title") or p.get("title"),
+        title=meta.get("title") or p.get("title"),
         status_code=p.get("status_code"),
         children=p.get("children_urls", p.get("children", [])) or [],
+        parent_url=p.get("parent_url"),
+        is_grouping=bool(meta.get("is_grouping", p.get("is_grouping", False))),
+        crawl_parent_url=p.get("crawl_parent_url") or meta.get("crawl_parent_url"),
     )
 
 
@@ -65,8 +71,32 @@ def _crawl_body(
     )
 
 
-def _pages_params(cursor: Optional[str], limit: int) -> Dict[str, Any]:
-    return compact({"cursor": cursor, "limit": limit})
+#: Nodes per pages request the API accepts (modules/webgrph/router.py
+#: PAGES_MAX_LIMIT); the API's own default is 100.
+PAGES_MAX_LIMIT = 1000
+
+
+def _pages_params(
+    cursor: Optional[str], limit: int, include_grouping: bool = False
+) -> Dict[str, Any]:
+    """Query for ``GET webgrph/crawl/{id}/pages``. The API answers 422 for a
+    ``limit`` outside 1-1000 or a cursor that is not a non-negative integer;
+    both are checked here first."""
+    if isinstance(limit, bool) or not isinstance(limit, int):
+        raise ValueError(f"limit must be an integer from 1 to {PAGES_MAX_LIMIT}")
+    if not 1 <= limit <= PAGES_MAX_LIMIT:
+        raise ValueError(
+            f"limit must be from 1 to {PAGES_MAX_LIMIT}, got {limit}"
+        )
+    if cursor is not None and not str(cursor).isdigit():
+        raise ValueError(
+            "cursor must be a non-negative integer returned as next_cursor, "
+            f"got {cursor!r}"
+        )
+    params = compact({"cursor": cursor, "limit": limit})
+    if include_grouping:
+        params["include_grouping"] = "true"
+    return params
 
 
 def _result(
@@ -257,24 +287,50 @@ class WebgrphNamespace:
             yield data
 
     def get_crawl_pages(
-        self, crawl_id: str, cursor: Optional[str] = None, limit: int = 500
+        self,
+        crawl_id: str,
+        cursor: Optional[str] = None,
+        limit: int = 500,
+        include_grouping: bool = False,
     ) -> Dict[str, Any]:
-        """One page of a crawl's hierarchy: ``nodes``, ``next_cursor``, ``total``."""
+        """One page of a crawl's hierarchy: ``nodes``, ``next_cursor``, ``total``.
+
+        Only fetched pages are listed, each under the page the crawl found
+        it on, so ``total`` matches the crawl's ``total_pages``.
+
+        Args:
+            crawl_id: The crawl.
+            cursor: ``next_cursor`` from the previous page (a non-negative
+                integer as a string); None for the first page.
+            limit: Nodes per page, 1-1000 (the SDK's default 500).
+            include_grouping: Also list the tree's grouping folders
+                (``metadata.is_grouping``), which were never fetched (new in
+                0.6.0).
+
+        Raises:
+            ValueError: ``limit`` is outside 1-1000 or ``cursor`` is not a
+                non-negative integer (the API would answer 422).
+        """
         return run(
             self._t,
             _Op(
                 "GET",
                 f"webgrph/crawl/{seg(crawl_id)}/pages",
-                params=_pages_params(cursor, limit),
+                params=_pages_params(cursor, limit, include_grouping),
             ),
         )
 
-    def crawl_all_pages(self, crawl_id: str) -> List[PageNode]:
-        """Every page node of a crawl, following the cursor."""
+    def crawl_all_pages(
+        self, crawl_id: str, include_grouping: bool = False, limit: int = 500
+    ) -> List[PageNode]:
+        """Every page node of a crawl, following the cursor (fetched pages
+        only unless ``include_grouping``)."""
         nodes: List[PageNode] = []
         cursor: Optional[str] = None
         while True:
-            page = self.get_crawl_pages(crawl_id, cursor=cursor)
+            page = self.get_crawl_pages(
+                crawl_id, cursor=cursor, limit=limit, include_grouping=include_grouping
+            )
             nodes.extend(_node(n) for n in page.get("nodes") or [])
             cursor = page.get("next_cursor")
             if not cursor:
@@ -470,22 +526,32 @@ class AsyncWebgrphNamespace:
             yield data
 
     async def get_crawl_pages(
-        self, crawl_id: str, cursor: Optional[str] = None, limit: int = 500
+        self,
+        crawl_id: str,
+        cursor: Optional[str] = None,
+        limit: int = 500,
+        include_grouping: bool = False,
     ) -> Dict[str, Any]:
+        """Async equivalent of WebgrphNamespace.get_crawl_pages."""
         return await arun(
             self._t,
             _Op(
                 "GET",
                 f"webgrph/crawl/{seg(crawl_id)}/pages",
-                params=_pages_params(cursor, limit),
+                params=_pages_params(cursor, limit, include_grouping),
             ),
         )
 
-    async def crawl_all_pages(self, crawl_id: str) -> List[PageNode]:
+    async def crawl_all_pages(
+        self, crawl_id: str, include_grouping: bool = False, limit: int = 500
+    ) -> List[PageNode]:
+        """Async equivalent of WebgrphNamespace.crawl_all_pages."""
         nodes: List[PageNode] = []
         cursor: Optional[str] = None
         while True:
-            page = await self.get_crawl_pages(crawl_id, cursor=cursor)
+            page = await self.get_crawl_pages(
+                crawl_id, cursor=cursor, limit=limit, include_grouping=include_grouping
+            )
             nodes.extend(_node(n) for n in page.get("nodes") or [])
             cursor = page.get("next_cursor")
             if not cursor:

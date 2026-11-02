@@ -36,6 +36,7 @@ print(f"Found {crawl.total_pages} pages")
 data = client.kolektr.page(
     "https://books.toscrape.com",
     schema={"title": "css:h3 a", "price": "css:p.price_color"},
+    item_selector="article.product_pod",   # one record per book
     fetch_artifact_id=fetch.artifact_id,
 )
 for book in data.records[:3]:
@@ -116,7 +117,7 @@ except KloakdError as e:
 | `PaymentRequiredError` | 402 | The plan's last payment failed |
 | `NotEntitledError` | 403 | Plan doesn't include this module (`not_entitled`: `module`) or feature (`tier_access_denied`: `feature`, `current_tier`, `required_tier`). A subclass of `ForbiddenError` |
 | `ForbiddenError` | 403 | Any other 403: the key may not access this resource |
-| `ConcurrencyLimitError` | 409 | Too many crawls or jobs running at once (`concurrent_limit`, `active_crawls`, `tier`) |
+| `ConcurrencyLimitError` | 409 | Every work slot of the organisation is in use (`concurrent_limit`, `active_crawls`, `active_requests`, `tier`); not retried. See *Work slots* |
 | `QuotaExceededError` | 429 | GB allocation and top-ups used up (`gb_exhausted`; not retried) |
 | `RateLimitError` | 429 | Request rate exceeded (`retry_after`, `reset_at`; retried). With `quota_exhausted` true it is the playground quota (`quota_used`, `quota_limit`, `upgrade_url`), which does not reset and is not retried |
 | `UpstreamError` | 502 | Target site unreachable |
@@ -154,6 +155,22 @@ it ends), raises `JobFailedError`; one still running at the timeout raises
 above the API's 85 s wait, so the client receives the 202 rather than
 timing out first.
 
+**Work slots:** every metered call (a fetch, an extraction, a crawl start,
+...) holds one of the organisation's work slots while it runs; crawls and
+batches hold theirs until they end. Free runs 2 at once, Starter 5, Pro 10,
+Pro+ 20, Developer 50, Enterprise 100. Over the limit the API answers 409
+`concurrent_limit` and the SDK raises `ConcurrencyLimitError`; it is not
+retried, so wait for one of your calls to finish and try again:
+
+```python
+from kloakd import ConcurrencyLimitError
+
+try:
+    client.kolektr.page(url, schema={"title": "css:h1"})
+except ConcurrencyLimitError as e:
+    print(e.tier, e.concurrent_limit, e.active_crawls, e.active_requests)
+```
+
 **Nexus knowledge:** `nexus.execute(...)` returns `execution_result_id`;
 pass it to `nexus.knowledge(result.execution_result_id)`.
 
@@ -164,7 +181,8 @@ crawl = client.webgrph.crawl("https://example.com")   # waits, then loads every 
 if not crawl.ok:
     print(crawl.status, crawl.error)
 all_pages = crawl.pages
-page = client.webgrph.get_crawl_pages(crawl.crawl_id, limit=100)   # one page, by cursor
+page = client.webgrph.get_crawl_pages(crawl.crawl_id, limit=100)   # one page, by cursor (limit 1-1000)
+folders = client.webgrph.crawl_all_pages(crawl.crawl_id, include_grouping=True)
 all_records = client.kolektr.page_all("https://example.com")
 
 # Discover, fetch and extract in one call. A page that fails is marked
@@ -179,10 +197,50 @@ hits = client.skanyr.search("pricing", site_id=stored["site_id"])
 zip_bytes = client.skanyr.export_site(stored["site_id"])   # a ZIP archive
 ```
 
+Pages: only fetched pages are listed, each under the page the crawl found
+it on, and `total_pages` / `max_depth_reached` count fetched pages only.
+`include_grouping=True` also lists the tree's grouping folders, which were
+never fetched (`PageNode.is_grouping`). `limit` is 1-1000 and a cursor is
+the `next_cursor` string of the previous page; anything else raises
+`ValueError` before the request (the API would answer 422).
+
 Extraction schemas are the shorthand `{"field": "css:selector"}` (the
-`css:` prefix is optional), a list of fields
+`css:` prefix is optional; a value may also be
+`{"selector": ..., "attribute": ..., "type": "list"}`), a list of fields
 `[{"name": "link", "selector": "a", "attribute": "href"}]`, or a full
 `schema_spec` with `fields`.
+
+### One record per item: `item_selector`
+
+On a list page, `item_selector` (CSS) makes one record per element it
+matches, and each field's selector is read inside that element: the first
+match gives the value (every match for `type: "list"`), its text or the
+named `attribute`; a field with no match in an item is `None`; a field
+without a selector reads the item element itself. Without `item_selector`
+the result is as before: one record for the page.
+
+```python
+books = client.kolektr.page(
+    "https://books.toscrape.com",
+    schema={
+        "title": {"selector": "h3 a", "attribute": "title"},
+        "price": "css:p.price_color",
+        "url": {"selector": "h3 a", "attribute": "href"},
+    },
+    item_selector="article.product_pod",
+)
+print(books.total_records)          # one record per book on the page
+print(books.records[0]["title"])
+
+# The same on HTML you already have, and as a full spec for client.crawl()
+client.kolektr.extract_html(html, url, schema={"name": "td.name"}, item_selector="tr")
+from kloakd import schema_spec
+spec = schema_spec({"title": "h3 a"}, item_selector="article.product_pod")
+site = client.crawl("https://books.toscrape.com", extract_schema=spec)
+```
+
+An empty `item_selector`, or one without fields, raises `ValueError`; an
+invalid CSS selector is refused by the API with 422 (`ApiError`).
 
 ## Parlyr — chat
 

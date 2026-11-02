@@ -47,10 +47,11 @@ print("Extracting book data ...")
 data = client.kolektr.page(
     TARGET,
     schema={
-        "title": "css:h3 a",
+        "title": {"selector": "h3 a", "attribute": "title"},
         "price": "css:p.price_color",
-        "rating": "css:p.star-rating",
+        "rating": {"selector": "p.star-rating", "attribute": "class"},
     },
+    item_selector="article.product_pod",  # one record per book (0.6.0)
     fetch_artifact_id=fetch.artifact_id,  # reuse — no third fetch
 )
 print(f"  records={data.total_records}  method={data.method}")

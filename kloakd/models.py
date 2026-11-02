@@ -9,7 +9,7 @@ serialised to dict via dataclasses.asdict() or inspected directly.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, TypedDict, Union
 
 # ---------------------------------------------------------------------------
 # Evadr — Anti-Bot Intelligence
@@ -88,18 +88,38 @@ class AnalyzeResult:
 
 @dataclass
 class PageNode:
-    """A single page discovered during a Webgrph crawl."""
+    """A single page discovered during a Webgrph crawl.
+
+    Attributes:
+        parent_url: The page above it in the tree (new in 0.6.0). In the
+            default listing this is the page the crawl found it on.
+        is_grouping: A grouping folder of the displayed tree, not a fetched
+            page (``metadata.is_grouping``, new in 0.6.0). Only listed with
+            ``include_grouping=True``.
+        crawl_parent_url: The page the crawl found it on, when a grouping
+            folder sits between them (new in 0.6.0). The crawl's stored page
+            dicts and its completion event carry it; the pages listing does
+            not (there ``parent_url`` already is that page), so it is None
+            for nodes read from ``get_crawl_pages``.
+    """
 
     url: str
     depth: int
     title: Optional[str] = None
     status_code: Optional[int] = None
     children: List[str] = field(default_factory=list)
+    parent_url: Optional[str] = None
+    is_grouping: bool = False
+    crawl_parent_url: Optional[str] = None
 
 
 @dataclass
 class CrawlResult:
-    """Result of a Webgrph site crawl."""
+    """Result of a Webgrph site crawl.
+
+    ``total_pages`` and ``max_depth_reached`` count fetched pages only (since
+    the 2 November 2026 API); the tree's grouping folders are not counted.
+    """
 
     success: bool
     crawl_id: str
@@ -479,6 +499,34 @@ class DuplicateCheckResult:
 # ---------------------------------------------------------------------------
 # Kolektr — Data Extraction
 # ---------------------------------------------------------------------------
+
+
+class SchemaField(TypedDict, total=False):
+    """One extraction field (kobe-scraper modules/kolektr/router.py FieldSpec).
+
+    ``name`` is required. ``selector`` is CSS; ``attribute`` reads that
+    attribute instead of the text; ``type`` ``"list"`` returns every match
+    (default ``"text"``: the first match).
+    """
+
+    name: str
+    selector: Optional[str]
+    attribute: Optional[str]
+    type: str
+
+
+class SchemaSpec(TypedDict, total=False):
+    """A full extraction spec (kobe-scraper modules/kolektr/router.py SchemaSpec).
+
+    ``item_selector`` (new in 0.6.0): CSS for the repeated item on a list
+    page; one record per match, each field read inside it.
+    """
+
+    fields: List[SchemaField]
+    item_selector: Optional[str]
+    pagination: bool
+    max_pages: int
+    output_format: str
 
 
 @dataclass
