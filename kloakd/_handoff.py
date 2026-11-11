@@ -6,8 +6,8 @@ then, it answers 202 with ``job_id`` and ``poll_url`` and the work goes on
 as a job. These routes do so: ``evadr/fetch`` (``poll_url`` is
 ``…/evadr/jobs/{job_id}``), ``kolektr/extract``, ``fetchyr/authenticate``,
 ``fetchyr/form/detect``, ``fetchyr/form/fill``, ``fetchyr/mfa/detect``,
-``nexus/analyze``, ``nexus/synthesize`` and ``nexus/execute`` (``poll_url``
-is ``/api/v1/organizations/{org}/handoff/{job_id}``, kobe-scraper
+``nexus/analyze`` and ``nexus/synthesize`` (``poll_url`` is
+``/api/v1/organizations/{org}/handoff/{job_id}``, kobe-scraper
 ``kernel/sync_handoff.py``).
 
 The SDK polls ``poll_url`` until the job's ``status`` is ``completed`` and

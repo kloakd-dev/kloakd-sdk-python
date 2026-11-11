@@ -2,20 +2,22 @@
 KLOAKD SDK — Nexus module namespace.
 
 Nexus is the strategy layer: analyse a page, synthesise an extraction
-program, verify it, run it, and read what was learned.
+program and verify it.
 
 Usage::
 
     page = client.evadr.fetch("https://example.com/products")
     analysis = client.nexus.analyze(page.url, page.html or "")
     program = client.nexus.synthesize(page.url, page.html or "", goal="product names and prices")
-    if client.nexus.verify(program.strategy_id).ok:
-        result = client.nexus.execute(program.strategy_id, page.url)
-        if result.execution_result_id:
-            learned = client.nexus.knowledge(result.execution_result_id)
+    check = client.nexus.verify(program.strategy_id)
+    print(check.verified, check.status, check.risk_score)
 
-``analyze``, ``synthesize`` and ``execute`` may be handed off as a job
-(HTTP 202, after about 85 s); the SDK follows it to the same result.
+``analyze`` and ``synthesize`` may be handed off as a job (HTTP 202, after
+about 85 s); the SDK follows it to the same result.
+
+``execute`` and ``knowledge`` were removed after 0.6.0: the API removed
+``POST nexus/execute``, and ``nexus/knowledge`` is not part of the public
+API (kobe-scraper scripts/generate_public_openapi.py EXCLUDED).
 """
 
 from __future__ import annotations
@@ -24,8 +26,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from kloakd.models import (
     NexusAnalyzeResult,
-    NexusExecuteResult,
-    NexusKnowledgeResult,
+    NexusSafetyCheck,
     NexusSynthesisResult,
     NexusVerifyResult,
 )
@@ -86,42 +87,19 @@ def _verification(strategy_id: str) -> Callable[[Dict[str, Any]], NexusVerifyRes
             safety_score=float(raw.get("safety_score") or 0.0),
             violations=raw.get("violations") or [],
             error=raw.get("error"),
-        )
-
-    return parse
-
-
-def _execution(
-    strategy_id: str, url: str
-) -> Callable[[Dict[str, Any]], NexusExecuteResult]:
-    def parse(raw: Dict[str, Any]) -> NexusExecuteResult:
-        return NexusExecuteResult(
-            url=raw.get("url", url),
-            strategy_id=str(raw.get("strategy_id") or strategy_id),
-            success=bool(raw.get("success", False)),
-            records=raw.get("records") or [],
-            artifact_id=_artifact_id(raw),
+            status=raw.get("status"),
+            risk_score=float(raw.get("risk_score") or 0.0),
+            safety_checks=[
+                NexusSafetyCheck(
+                    property=str(c.get("property") or ""),
+                    passed=bool(c.get("passed", False)),
+                    details=str(c.get("details") or ""),
+                )
+                for c in raw.get("safety_checks") or []
+                if isinstance(c, dict)
+            ],
+            verification_result_id=raw.get("verification_result_id"),
             duration_ms=int(raw.get("duration_ms") or 0),
-            error=raw.get("error_message"),
-            execution_result_id=raw.get("execution_result_id"),
-        )
-
-    return parse
-
-
-def _knowledge(
-    execution_result_id: str,
-) -> Callable[[Dict[str, Any]], NexusKnowledgeResult]:
-    def parse(raw: Dict[str, Any]) -> NexusKnowledgeResult:
-        return NexusKnowledgeResult(
-            execution_result_id=str(
-                raw.get("execution_result_id") or execution_result_id
-            ),
-            learned_concepts=raw.get("learned_concepts") or [],
-            patterns=raw.get("patterns") or [],
-            total_patterns=int(raw.get("total_patterns") or 0),
-            duration_ms=int(raw.get("duration_ms") or 0),
-            error=raw.get("error"),
         )
 
     return parse
@@ -170,41 +148,6 @@ class NexusNamespace:
                 "nexus/verify",
                 {"strategy_id": strategy_id},
                 parse=_verification(strategy_id),
-            ),
-        )
-
-    def execute(
-        self, strategy_id: str, url: str, options: Optional[Dict[str, Any]] = None
-    ) -> NexusExecuteResult:
-        """Run a strategy against a URL.
-
-        The result's ``execution_result_id`` (when the API returns one) is
-        the id to pass to ``knowledge``.
-        """
-        return run(
-            self._t,
-            _Op(
-                "POST",
-                "nexus/execute",
-                compact({"strategy_id": strategy_id, "url": url, "options": options}),
-                parse=_execution(strategy_id, url),
-                follow=True,
-            ),
-        )
-
-    def knowledge(self, execution_result_id: str) -> NexusKnowledgeResult:
-        """What an execution taught the knowledge store.
-
-        ``execution_result_id`` is the ``execution_result_id`` of the result
-        ``execute`` returned.
-        """
-        return run(
-            self._t,
-            _Op(
-                "POST",
-                "nexus/knowledge",
-                {"execution_result_id": execution_result_id},
-                parse=_knowledge(execution_result_id),
             ),
         )
 
@@ -277,34 +220,6 @@ class AsyncNexusNamespace:
                 "nexus/verify",
                 {"strategy_id": strategy_id},
                 parse=_verification(strategy_id),
-            ),
-        )
-
-    async def execute(
-        self, strategy_id: str, url: str, options: Optional[Dict[str, Any]] = None
-    ) -> NexusExecuteResult:
-        """Run a strategy against a URL."""
-        return await arun(
-            self._t,
-            _Op(
-                "POST",
-                "nexus/execute",
-                compact({"strategy_id": strategy_id, "url": url, "options": options}),
-                parse=_execution(strategy_id, url),
-                follow=True,
-            ),
-        )
-
-    async def knowledge(self, execution_result_id: str) -> NexusKnowledgeResult:
-        """What an execution taught the knowledge store (the id is
-        ``execution_result_id`` of the result ``execute`` returned)."""
-        return await arun(
-            self._t,
-            _Op(
-                "POST",
-                "nexus/knowledge",
-                {"execution_result_id": execution_result_id},
-                parse=_knowledge(execution_result_id),
             ),
         )
 

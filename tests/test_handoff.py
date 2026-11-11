@@ -2,7 +2,7 @@
 and the work continues as a job (Cloudflare closes requests at 100 s).
 
 evadr/fetch polls its own job route (``…/evadr/jobs/{id}``); kolektr extract,
-the four fetchyr routes and nexus analyze/synthesize/execute poll
+the four fetchyr routes and nexus analyze/synthesize poll
 ``/api/v1/organizations/{org}/handoff/{id}`` (kobe-scraper
 ``kernel/sync_handoff.py``). The SDK follows ``poll_url`` either way.
 """
@@ -68,9 +68,6 @@ CASES: List[Case] = [
     ("nexus/synthesize", lambda c: c.nexus.synthesize("https://x.example", "<html/>", "prices"),
      {"url": "https://x.example", "goal": "prices", "strategy_id": "st-1", "program": "p"},
      lambda r: (r.strategy_id, r.program) == ("st-1", "p")),
-    ("nexus/execute", lambda c: c.nexus.execute("st-1", "https://x.example"),
-     {"url": "https://x.example", "strategy_id": "st-1", "success": True, "records": [{"b": 2}], "duration_ms": 5, "execution_result_id": "er-1"},
-     lambda r: (r.records, r.execution_result_id) == ([{"b": 2}], "er-1")),
 ]
 IDS = [c[0] for c in CASES]
 
@@ -131,10 +128,10 @@ def test_a_200_that_carries_a_job_id_is_the_answer(fast_client: Kloakd) -> None:
 
 @respx.mock
 def test_a_failed_hand_off_raises_with_the_route_error(fast_client: Kloakd) -> None:
-    respx.post(f"{BASE}/nexus/execute").mock(return_value=mock_response(handed_off(), 202))
+    respx.post(f"{BASE}/nexus/synthesize").mock(return_value=mock_response(handed_off(), 202))
     respx.get(HANDOFF_JOB).mock(return_value=mock_response({"job_id": "h-1", "status": "failed", "error": "Strategy Engine execution failed: boom"}))
     with pytest.raises(JobFailedError) as caught:
-        fast_client.nexus.execute("st-1", "https://x.example")
+        fast_client.nexus.synthesize("https://x.example", "<html/>", "prices")
     assert (caught.value.job_id, caught.value.message) == ("h-1", "Strategy Engine execution failed: boom")
 
 

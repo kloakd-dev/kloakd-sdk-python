@@ -166,6 +166,139 @@ class CrawlEvent:
     error: Optional[Union[str, Dict[str, Any]]] = None
     sequence: Optional[int] = None
 
+@dataclass
+class CrawlExtractJob:
+    """A crawl-extract job as ``webgrph.start_crawl_extract`` returns it
+    (kobe-scraper modules/webgrph/crawl_extract_router.py)."""
+
+    job_id: str
+    crawl_id: str
+    url: str
+    status: str
+    #: The page and depth limits the job runs with (the request's, capped
+    #: by the plan).
+    max_pages: Optional[int] = None
+    max_depth: Optional[int] = None
+    #: Paths of the job's routes: ``status``, ``results``, ``pages``,
+    #: ``cancel``, ``export`` (by format), ``crawl_events``, ``events``.
+    links: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class CrawlExtractStatus:
+    """The state of a crawl-extract job (``webgrph.get_crawl_extract``).
+
+    ``status`` is ``queued``, ``crawling``, ``extracting``, ``completed``,
+    ``failed`` or ``cancelled``."""
+
+    job_id: str
+    status: str
+    crawl_id: str = ""
+    url: str = ""
+    cancel_requested: bool = False
+    pages_crawled: int = 0
+    #: None until the crawl has finished.
+    pages_total: Optional[int] = None
+    pages_extracted: int = 0
+    pages_failed: int = 0
+    items: int = 0
+    error: Optional[str] = None
+    error_code: Optional[str] = None
+    #: The request the job was started with.
+    request: Dict[str, Any] = field(default_factory=dict)
+    created_at: Optional[str] = None
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    links: Dict[str, Any] = field(default_factory=dict)
+    #: Pages by how they were extracted.
+    pages_by_method: Dict[str, int] = field(default_factory=dict)
+    #: The row shapes found: ``{shape, kind, rows, page_types, fields}``.
+    shapes: List[Dict[str, Any]] = field(default_factory=list)
+
+    @property
+    def finished(self) -> bool:
+        return self.status in ("completed", "failed", "cancelled")
+
+    @property
+    def ok(self) -> bool:
+        return self.status == "completed"
+
+
+@dataclass
+class CrawlExtractRow:
+    """One extracted row: an item of a listing page (``row_kind`` "item")
+    or a whole page's fields ("page")."""
+
+    page_url: str
+    row_kind: str
+    item_index: int = 0
+    data: Dict[str, Any] = field(default_factory=dict)
+    page_type: Optional[str] = None
+    shape: Optional[str] = None
+
+
+@dataclass
+class CrawlExtractResultsPage:
+    """One page of a job's rows. ``next_cursor`` is None on the last page."""
+
+    job_id: str
+    status: str
+    total: int = 0
+    count: int = 0
+    rows: List[CrawlExtractRow] = field(default_factory=list)
+    next_cursor: Optional[str] = None
+
+
+@dataclass
+class CrawlExtractPage:
+    """One crawled page of a job and what its extraction came to."""
+
+    page_seq: int
+    page_url: str
+    status: str
+    page_type: Optional[str] = None
+    title: Optional[str] = None
+    method: Optional[str] = None
+    item_count: int = 0
+    detail: Any = None
+    extracted_at: Optional[str] = None
+
+
+@dataclass
+class CrawlExtractPagesResult:
+    """Some of a job's pages (``webgrph.get_crawl_extract_pages``)."""
+
+    job_id: str
+    status: str
+    count: int = 0
+    offset: int = 0
+    pages: List[CrawlExtractPage] = field(default_factory=list)
+
+
+@dataclass
+class CrawlExtractCancelResult:
+    """Result of ``webgrph.cancel_crawl_extract``. ``status`` is
+    ``cancelled`` (the job had not started) or ``cancelling``."""
+
+    success: bool
+    job_id: str
+    crawl_id: str = ""
+    status: str = ""
+
+
+@dataclass
+class SavedExport:
+    """An export written to a file (``webgrph.download_crawl_extract``,
+    ``client.download_batch_job``)."""
+
+    path: str
+    bytes: int
+    content_type: Optional[str] = None
+    filename: Optional[str] = None
+    #: ``X-Job-Status`` (the crawl-extract export only).
+    job_status: Optional[str] = None
+
 
 # ---------------------------------------------------------------------------
 # Crawl Orchestrator — High-level site crawl
@@ -265,51 +398,33 @@ class NexusSynthesisResult:
         return self.error is None
 
 @dataclass
+class NexusSafetyCheck:
+    """One safety property checked by nexus.verify()."""
+
+    property: str
+    passed: bool
+    details: str = ""
+
+@dataclass
 class NexusVerifyResult:
-    """Result of nexus.verify()."""
+    """Result of nexus.verify() (kobe-scraper modules/nexus/router.py
+    VerifyResponse)."""
 
     strategy_id: str
     verified: bool
     safety_score: float = 0.0
     violations: List[str] = field(default_factory=list)
     error: Optional[str] = None
+    #: "verified" or "unsafe" (None if the API sent none).
+    status: Optional[str] = None
+    risk_score: float = 0.0
+    safety_checks: List[NexusSafetyCheck] = field(default_factory=list)
+    verification_result_id: Optional[str] = None
+    duration_ms: int = 0
 
     @property
     def ok(self) -> bool:
         return self.verified and self.error is None
-
-@dataclass
-class NexusExecuteResult:
-    """Result of nexus.execute()."""
-
-    url: str
-    strategy_id: str
-    success: bool
-    records: List[Dict[str, Any]] = field(default_factory=list)
-    artifact_id: Optional[str] = None
-    duration_ms: int = 0
-    error: Optional[str] = None
-    # The id nexus.knowledge() takes for this execution (None if the API sent none).
-    execution_result_id: Optional[str] = None
-
-    @property
-    def ok(self) -> bool:
-        return self.success and self.error is None
-
-@dataclass
-class NexusKnowledgeResult:
-    """Result of nexus.knowledge()."""
-
-    execution_result_id: str
-    learned_concepts: List[Dict[str, Any]] = field(default_factory=list)
-    patterns: List[Dict[str, Any]] = field(default_factory=list)
-    total_patterns: int = 0
-    duration_ms: int = 0
-    error: Optional[str] = None
-
-    @property
-    def ok(self) -> bool:
-        return self.error is None
 
 # ---------------------------------------------------------------------------
 # Parlyr — Conversational NLP

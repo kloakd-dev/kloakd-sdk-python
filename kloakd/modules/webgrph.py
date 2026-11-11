@@ -10,16 +10,54 @@ Usage::
     crawl = client.webgrph.crawl("https://example.com", max_depth=3)
     print(crawl.status, crawl.total_pages)
     site = client.skanyr.site_from_crawl(crawl.crawl_id)
+
+Crawl, extract and download in one job (added after 0.6.0)::
+
+    job = client.webgrph.crawl_extract(
+        "https://example.com", max_pages=200, extract={"fields": ["title", "price"]}
+    )
+    for row in client.webgrph.iter_crawl_extract_results(job.job_id):
+        print(row.page_url, row.data)
+    client.webgrph.download_crawl_extract(job.job_id, "rows.csv", format="csv")
 """
 
 from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, Iterator, List, Optional
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    AsyncIterator,
+    Callable,
+    Dict,
+    Iterator,
+    List,
+    Optional,
+)
 
-from kloakd.models import CrawlEvent, CrawlResult, PageNode
-from kloakd.modules._ops import Op, _Op, arun, as_list, compact, run, seg
+from kloakd._download import (
+    AsyncExportDownload,
+    ExportDownload,
+    asave_export,
+    check_export_format,
+    save_export,
+)
+from kloakd.errors import JobFailedError, JobTimeoutError
+from kloakd.models import (
+    CrawlEvent,
+    CrawlExtractCancelResult,
+    CrawlExtractJob,
+    CrawlExtractPage,
+    CrawlExtractPagesResult,
+    CrawlExtractResultsPage,
+    CrawlExtractRow,
+    CrawlExtractStatus,
+    CrawlResult,
+    PageNode,
+    SavedExport,
+)
+from kloakd.modules._ops import Op, _Op, arun, as_dict, as_list, compact, run, seg
 
 if TYPE_CHECKING:
     from kloakd._http import _AsyncHttpTransport, _HttpTransport
@@ -159,6 +197,251 @@ def _ops_session(
             }
         ),
     )
+
+
+# ── Crawl-extract (kobe-scraper modules/webgrph/crawl_extract_router.py) ──
+
+#: Rows or pages per request the API accepts (1-1000; its default is 100).
+CRAWL_EXTRACT_MAX_LIMIT = 1000
+_CRAWL_EXTRACT_POLL_TIMEOUT = 60 * 60.0
+_CE = "webgrph/crawl-extract"
+
+
+def _opt_int(value: Any) -> Optional[int]:
+    return int(value) if value is not None else None
+
+
+def _ce_limit(limit: Optional[int]) -> None:
+    """The API answers 422 for a ``limit`` outside 1-1000; checked here first."""
+    if limit is None:
+        return
+    if isinstance(limit, bool) or not isinstance(limit, int):
+        raise ValueError(
+            f"limit must be an integer from 1 to {CRAWL_EXTRACT_MAX_LIMIT}"
+        )
+    if not 1 <= limit <= CRAWL_EXTRACT_MAX_LIMIT:
+        raise ValueError(
+            f"limit must be from 1 to {CRAWL_EXTRACT_MAX_LIMIT}, got {limit}"
+        )
+
+
+def _ce_job(url: str) -> Callable[[Any], CrawlExtractJob]:
+    def parse(body: Any) -> CrawlExtractJob:
+        raw = as_dict(body)
+        limits = raw.get("limits") or {}
+        return CrawlExtractJob(
+            job_id=str(raw.get("job_id") or ""),
+            crawl_id=str(raw.get("crawl_id") or ""),
+            url=str(raw.get("url") or url),
+            status=str(raw.get("status") or ""),
+            max_pages=_opt_int(limits.get("max_pages")),
+            max_depth=_opt_int(limits.get("max_depth")),
+            links=raw.get("links") or {},
+        )
+
+    return parse
+
+
+def _ce_status(job_id: str) -> Callable[[Any], CrawlExtractStatus]:
+    def parse(body: Any) -> CrawlExtractStatus:
+        raw = as_dict(body)
+        progress = raw.get("progress") or {}
+        return CrawlExtractStatus(
+            job_id=str(raw.get("job_id") or job_id),
+            status=str(raw.get("status") or ""),
+            crawl_id=str(raw.get("crawl_id") or ""),
+            url=str(raw.get("url") or ""),
+            cancel_requested=bool(raw.get("cancel_requested", False)),
+            pages_crawled=int(progress.get("pages_crawled") or 0),
+            pages_total=_opt_int(progress.get("pages_total")),
+            pages_extracted=int(progress.get("pages_extracted") or 0),
+            pages_failed=int(progress.get("pages_failed") or 0),
+            items=int(progress.get("items") or 0),
+            error=raw.get("error"),
+            error_code=raw.get("error_code"),
+            request=raw.get("request") or {},
+            created_at=raw.get("created_at"),
+            started_at=raw.get("started_at"),
+            completed_at=raw.get("completed_at"),
+            updated_at=raw.get("updated_at"),
+            links=raw.get("links") or {},
+            pages_by_method=raw.get("pages_by_method") or {},
+            shapes=raw.get("shapes") or [],
+        )
+
+    return parse
+
+
+def _ce_results(job_id: str) -> Callable[[Any], CrawlExtractResultsPage]:
+    def parse(body: Any) -> CrawlExtractResultsPage:
+        raw = as_dict(body)
+        rows = [
+            CrawlExtractRow(
+                page_url=str(r.get("page_url") or ""),
+                row_kind=str(r.get("row_kind") or ""),
+                item_index=int(r.get("item_index") or 0),
+                data=r.get("data") or {},
+                page_type=r.get("page_type"),
+                shape=r.get("shape"),
+            )
+            for r in raw.get("rows") or []
+        ]
+        return CrawlExtractResultsPage(
+            job_id=str(raw.get("job_id") or job_id),
+            status=str(raw.get("status") or ""),
+            total=int(raw.get("total") or 0),
+            count=int(raw.get("count") or len(rows)),
+            rows=rows,
+            next_cursor=raw.get("next_cursor") or None,
+        )
+
+    return parse
+
+
+def _ce_pages(job_id: str) -> Callable[[Any], CrawlExtractPagesResult]:
+    def parse(body: Any) -> CrawlExtractPagesResult:
+        raw = as_dict(body)
+        pages = [
+            CrawlExtractPage(
+                page_seq=int(p.get("page_seq") or 0),
+                page_url=str(p.get("page_url") or ""),
+                status=str(p.get("status") or ""),
+                page_type=p.get("page_type"),
+                title=p.get("title"),
+                method=p.get("method"),
+                item_count=int(p.get("item_count") or 0),
+                detail=p.get("detail"),
+                extracted_at=p.get("extracted_at"),
+            )
+            for p in raw.get("pages") or []
+        ]
+        return CrawlExtractPagesResult(
+            job_id=str(raw.get("job_id") or job_id),
+            status=str(raw.get("status") or ""),
+            count=int(raw.get("count") or len(pages)),
+            offset=int(raw.get("offset") or 0),
+            pages=pages,
+        )
+
+    return parse
+
+
+def _ce_cancelled(job_id: str) -> Callable[[Any], CrawlExtractCancelResult]:
+    def parse(body: Any) -> CrawlExtractCancelResult:
+        raw = as_dict(body)
+        return CrawlExtractCancelResult(
+            success=bool(raw.get("success", False)),
+            job_id=str(raw.get("job_id") or job_id),
+            crawl_id=str(raw.get("crawl_id") or ""),
+            status=str(raw.get("status") or ""),
+        )
+
+    return parse
+
+
+def _ops_ce_start(
+    url: str,
+    max_depth: Optional[int],
+    max_pages: Optional[int],
+    include_external_links: Optional[bool],
+    session_artifact_id: Optional[str],
+    capture_mode: Optional[str],
+    scope: Optional[Dict[str, Any]],
+    budget: Optional[Dict[str, Any]],
+    extract: Optional[Dict[str, Any]],
+) -> Op[CrawlExtractJob]:
+    return _Op(
+        "POST",
+        _CE,
+        compact(
+            {
+                "url": url,
+                "max_depth": max_depth,
+                "max_pages": max_pages,
+                "include_external_links": include_external_links,
+                "session_artifact_id": session_artifact_id,
+                "capture_mode": capture_mode,
+                "scope": scope,
+                "budget": budget,
+                "extract": extract,
+            }
+        ),
+        parse=_ce_job(url),
+    )
+
+
+def _ops_ce_get(job_id: str) -> Op[CrawlExtractStatus]:
+    return _Op("GET", f"{_CE}/{seg(job_id)}", parse=_ce_status(job_id))
+
+
+def _ops_ce_results(
+    job_id: str,
+    limit: Optional[int],
+    cursor: Optional[str],
+    shape: Optional[str],
+    page_type: Optional[str],
+    kind: Optional[str],
+) -> Op[CrawlExtractResultsPage]:
+    _ce_limit(limit)
+    return _Op(
+        "GET",
+        f"{_CE}/{seg(job_id)}/results",
+        params=compact(
+            {
+                "limit": limit,
+                "cursor": cursor,
+                "shape": shape,
+                "page_type": page_type,
+                "kind": kind,
+            }
+        ),
+        parse=_ce_results(job_id),
+    )
+
+
+def _ops_ce_pages(
+    job_id: str, limit: Optional[int], offset: Optional[int], status: Optional[str]
+) -> Op[CrawlExtractPagesResult]:
+    _ce_limit(limit)
+    return _Op(
+        "GET",
+        f"{_CE}/{seg(job_id)}/pages",
+        params=compact({"limit": limit, "offset": offset, "status": status}),
+        parse=_ce_pages(job_id),
+    )
+
+
+def _ops_ce_cancel(job_id: str) -> Op[CrawlExtractCancelResult]:
+    return _Op(
+        "POST", f"{_CE}/{seg(job_id)}/cancel", {}, parse=_ce_cancelled(job_id)
+    )
+
+
+def _ce_export_params(
+    format: str, shape: Optional[str], page_type: Optional[str], kind: Optional[str]
+) -> Dict[str, Any]:
+    return compact(
+        {
+            "format": check_export_format(format),
+            "shape": shape,
+            "page_type": page_type,
+            "kind": kind,
+        }
+    )
+
+
+def _ce_still_running(job_id: str, timeout: float) -> JobTimeoutError:
+    return JobTimeoutError(
+        f"Crawl-extract job {job_id} still running after {timeout}s; "
+        "check it with get_crawl_extract",
+        job_id,
+    )
+
+
+def _ce_ended(status: CrawlExtractStatus) -> CrawlExtractStatus:
+    if status.status == "failed":
+        raise JobFailedError(status.error or "Crawl-extract job failed", status.job_id)
+    return status
 
 
 class WebgrphNamespace:
@@ -335,6 +618,225 @@ class WebgrphNamespace:
             cursor = page.get("next_cursor")
             if not cursor:
                 return nodes
+
+    # ── Crawl, extract and download in one job (added after 0.6.0) ──
+
+    def start_crawl_extract(
+        self,
+        url: str,
+        max_depth: Optional[int] = None,
+        max_pages: Optional[int] = None,
+        include_external_links: Optional[bool] = None,
+        session_artifact_id: Optional[str] = None,
+        capture_mode: Optional[str] = None,
+        scope: Optional[Dict[str, Any]] = None,
+        budget: Optional[Dict[str, Any]] = None,
+        extract: Optional[Dict[str, Any]] = None,
+    ) -> CrawlExtractJob:
+        """Start a job that crawls a site and extracts every page it
+        fetches (the API answers 202). Read it with ``get_crawl_extract``,
+        its rows with ``get_crawl_extract_results`` or an export.
+
+        Args:
+            url: Where the crawl starts.
+            max_depth, max_pages: Crawl limits; the plan's cap applies.
+            extract: What to extract: ``{"entity_type": ...}``,
+                ``{"fields": ["title", "price"]}`` or ``{"schema":
+                {"item_selector": ..., "fields": [{"name", "selector",
+                "attribute", "type"}]}}``. Without it the API decides per
+                page.
+
+        Raises:
+            ForbiddenError: a test key (``test_key_not_allowed``), or the
+                plan has no Kolektr (``module_not_entitled``).
+        """
+        return run(
+            self._t,
+            _ops_ce_start(
+                url,
+                max_depth,
+                max_pages,
+                include_external_links,
+                session_artifact_id,
+                capture_mode,
+                scope,
+                budget,
+                extract,
+            ),
+        )
+
+    def get_crawl_extract(self, job_id: str) -> CrawlExtractStatus:
+        """A job's state, progress and the row shapes found so far. An
+        unknown job raises ApiError 404."""
+        return run(self._t, _ops_ce_get(job_id))
+
+    def wait_for_crawl_extract(
+        self,
+        job_id: str,
+        poll_interval: float = _DEFAULT_POLL_INTERVAL,
+        poll_timeout: float = _CRAWL_EXTRACT_POLL_TIMEOUT,
+    ) -> CrawlExtractStatus:
+        """Poll a job until it ends; returns its last state (completed,
+        failed or cancelled: check ``ok``). Still running after
+        ``poll_timeout`` seconds raises JobTimeoutError; the job carries on."""
+        deadline = time.monotonic() + poll_timeout
+        while True:
+            status = self.get_crawl_extract(job_id)
+            if status.finished:
+                return status
+            if time.monotonic() + poll_interval > deadline:
+                raise _ce_still_running(job_id, poll_timeout)
+            time.sleep(poll_interval)
+
+    def crawl_extract(
+        self,
+        url: str,
+        max_depth: Optional[int] = None,
+        max_pages: Optional[int] = None,
+        include_external_links: Optional[bool] = None,
+        session_artifact_id: Optional[str] = None,
+        capture_mode: Optional[str] = None,
+        scope: Optional[Dict[str, Any]] = None,
+        budget: Optional[Dict[str, Any]] = None,
+        extract: Optional[Dict[str, Any]] = None,
+        poll_interval: float = _DEFAULT_POLL_INTERVAL,
+        poll_timeout: float = _CRAWL_EXTRACT_POLL_TIMEOUT,
+    ) -> CrawlExtractStatus:
+        """Crawl a site and extract every page: start the job and wait until
+        it ends; returns its last state (completed or cancelled).
+
+        Raises:
+            JobFailedError: the job failed (the rows it wrote can still be
+                read and exported with the error's ``job_id``).
+            JobTimeoutError: still running after ``poll_timeout`` seconds;
+                the job carries on.
+        """
+        job = self.start_crawl_extract(
+            url,
+            max_depth,
+            max_pages,
+            include_external_links,
+            session_artifact_id,
+            capture_mode,
+            scope,
+            budget,
+            extract,
+        )
+        return _ce_ended(
+            self.wait_for_crawl_extract(job.job_id, poll_interval, poll_timeout)
+        )
+
+    def get_crawl_extract_results(
+        self,
+        job_id: str,
+        limit: Optional[int] = None,
+        cursor: Optional[str] = None,
+        shape: Optional[str] = None,
+        page_type: Optional[str] = None,
+        kind: Optional[str] = None,
+    ) -> CrawlExtractResultsPage:
+        """One page of a job's rows, in page order then item order; pass
+        ``next_cursor`` back as ``cursor`` for the next. Rows appear while
+        the job runs.
+
+        Args:
+            limit: Rows per page, 1-1000 (the API's default is 100).
+            shape, page_type: Only rows of that shape or page type.
+            kind: ``"item"`` or ``"page"`` rows only.
+
+        Raises:
+            ValueError: ``limit`` is outside 1-1000 (the API would answer 422).
+        """
+        return run(
+            self._t, _ops_ce_results(job_id, limit, cursor, shape, page_type, kind)
+        )
+
+    def iter_crawl_extract_results(
+        self,
+        job_id: str,
+        limit: Optional[int] = None,
+        shape: Optional[str] = None,
+        page_type: Optional[str] = None,
+        kind: Optional[str] = None,
+    ) -> Iterator[CrawlExtractRow]:
+        """Every row of a job, one page at a time, following the cursor."""
+        cursor: Optional[str] = None
+        while True:
+            page = self.get_crawl_extract_results(
+                job_id, limit, cursor, shape, page_type, kind
+            )
+            yield from page.rows
+            cursor = page.next_cursor
+            if not cursor:
+                return
+
+    def crawl_extract_all_results(
+        self,
+        job_id: str,
+        limit: Optional[int] = None,
+        shape: Optional[str] = None,
+        page_type: Optional[str] = None,
+        kind: Optional[str] = None,
+    ) -> List[CrawlExtractRow]:
+        """Every row of a job in memory (for a large job prefer
+        ``iter_crawl_extract_results`` or an export)."""
+        return list(
+            self.iter_crawl_extract_results(job_id, limit, shape, page_type, kind)
+        )
+
+    def get_crawl_extract_pages(
+        self,
+        job_id: str,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
+        status: Optional[str] = None,
+    ) -> CrawlExtractPagesResult:
+        """The job's pages and what each extraction came to (``status``:
+        ``"extracted"`` or ``"failed"`` pages only). ``limit`` is 1-1000."""
+        return run(self._t, _ops_ce_pages(job_id, limit, offset, status))
+
+    def export_crawl_extract(
+        self,
+        job_id: str,
+        format: str = "json",
+        shape: Optional[str] = None,
+        page_type: Optional[str] = None,
+        kind: Optional[str] = None,
+    ) -> ExportDownload:
+        """A job's rows as a streamed file (``format``: json, ndjson or csv;
+        the CSV starts with a UTF-8 byte order mark). A job that has not
+        completed exports the rows it has (``job_status``). Close the
+        result, or use it as a context manager.
+
+        Raises:
+            ValueError: ``format`` is not json, ndjson or csv.
+        """
+        response, client = self._t.open_stream(
+            f"{_CE}/{seg(job_id)}/export",
+            _ce_export_params(format, shape, page_type, kind),
+        )
+        return ExportDownload(response, client)
+
+    def download_crawl_extract(
+        self,
+        job_id: str,
+        path: str,
+        format: str = "json",
+        shape: Optional[str] = None,
+        page_type: Optional[str] = None,
+        kind: Optional[str] = None,
+    ) -> SavedExport:
+        """Write a job's rows to the file ``path`` as they arrive. The file
+        is created once the API has answered 200."""
+        return save_export(
+            self.export_crawl_extract(job_id, format, shape, page_type, kind), path
+        )
+
+    def cancel_crawl_extract(self, job_id: str) -> CrawlExtractCancelResult:
+        """Stop a job; rows already written stay. ``status`` is
+        ``cancelled``, or ``cancelling`` while a worker still holds it. A
+        job that has already ended raises ApiError 409."""
+        return run(self._t, _ops_ce_cancel(job_id))
 
     # ── Reader view, detected APIs, sessions (moved from skanyr in 0.3) ──
 
@@ -556,6 +1058,181 @@ class AsyncWebgrphNamespace:
             cursor = page.get("next_cursor")
             if not cursor:
                 return nodes
+
+    # ── Crawl, extract and download in one job (added after 0.6.0) ──
+
+    async def start_crawl_extract(
+        self,
+        url: str,
+        max_depth: Optional[int] = None,
+        max_pages: Optional[int] = None,
+        include_external_links: Optional[bool] = None,
+        session_artifact_id: Optional[str] = None,
+        capture_mode: Optional[str] = None,
+        scope: Optional[Dict[str, Any]] = None,
+        budget: Optional[Dict[str, Any]] = None,
+        extract: Optional[Dict[str, Any]] = None,
+    ) -> CrawlExtractJob:
+        """Async equivalent of WebgrphNamespace.start_crawl_extract."""
+        return await arun(
+            self._t,
+            _ops_ce_start(
+                url,
+                max_depth,
+                max_pages,
+                include_external_links,
+                session_artifact_id,
+                capture_mode,
+                scope,
+                budget,
+                extract,
+            ),
+        )
+
+    async def get_crawl_extract(self, job_id: str) -> CrawlExtractStatus:
+        """Async equivalent of WebgrphNamespace.get_crawl_extract."""
+        return await arun(self._t, _ops_ce_get(job_id))
+
+    async def wait_for_crawl_extract(
+        self,
+        job_id: str,
+        poll_interval: float = _DEFAULT_POLL_INTERVAL,
+        poll_timeout: float = _CRAWL_EXTRACT_POLL_TIMEOUT,
+    ) -> CrawlExtractStatus:
+        """Async equivalent of WebgrphNamespace.wait_for_crawl_extract."""
+        deadline = time.monotonic() + poll_timeout
+        while True:
+            status = await self.get_crawl_extract(job_id)
+            if status.finished:
+                return status
+            if time.monotonic() + poll_interval > deadline:
+                raise _ce_still_running(job_id, poll_timeout)
+            await asyncio.sleep(poll_interval)
+
+    async def crawl_extract(
+        self,
+        url: str,
+        max_depth: Optional[int] = None,
+        max_pages: Optional[int] = None,
+        include_external_links: Optional[bool] = None,
+        session_artifact_id: Optional[str] = None,
+        capture_mode: Optional[str] = None,
+        scope: Optional[Dict[str, Any]] = None,
+        budget: Optional[Dict[str, Any]] = None,
+        extract: Optional[Dict[str, Any]] = None,
+        poll_interval: float = _DEFAULT_POLL_INTERVAL,
+        poll_timeout: float = _CRAWL_EXTRACT_POLL_TIMEOUT,
+    ) -> CrawlExtractStatus:
+        """Async equivalent of WebgrphNamespace.crawl_extract."""
+        job = await self.start_crawl_extract(
+            url,
+            max_depth,
+            max_pages,
+            include_external_links,
+            session_artifact_id,
+            capture_mode,
+            scope,
+            budget,
+            extract,
+        )
+        return _ce_ended(
+            await self.wait_for_crawl_extract(job.job_id, poll_interval, poll_timeout)
+        )
+
+    async def get_crawl_extract_results(
+        self,
+        job_id: str,
+        limit: Optional[int] = None,
+        cursor: Optional[str] = None,
+        shape: Optional[str] = None,
+        page_type: Optional[str] = None,
+        kind: Optional[str] = None,
+    ) -> CrawlExtractResultsPage:
+        """Async equivalent of WebgrphNamespace.get_crawl_extract_results."""
+        return await arun(
+            self._t, _ops_ce_results(job_id, limit, cursor, shape, page_type, kind)
+        )
+
+    async def iter_crawl_extract_results(
+        self,
+        job_id: str,
+        limit: Optional[int] = None,
+        shape: Optional[str] = None,
+        page_type: Optional[str] = None,
+        kind: Optional[str] = None,
+    ) -> AsyncIterator[CrawlExtractRow]:
+        """Async equivalent of WebgrphNamespace.iter_crawl_extract_results."""
+        cursor: Optional[str] = None
+        while True:
+            page = await self.get_crawl_extract_results(
+                job_id, limit, cursor, shape, page_type, kind
+            )
+            for row in page.rows:
+                yield row
+            cursor = page.next_cursor
+            if not cursor:
+                return
+
+    async def crawl_extract_all_results(
+        self,
+        job_id: str,
+        limit: Optional[int] = None,
+        shape: Optional[str] = None,
+        page_type: Optional[str] = None,
+        kind: Optional[str] = None,
+    ) -> List[CrawlExtractRow]:
+        """Async equivalent of WebgrphNamespace.crawl_extract_all_results."""
+        return [
+            row
+            async for row in self.iter_crawl_extract_results(
+                job_id, limit, shape, page_type, kind
+            )
+        ]
+
+    async def get_crawl_extract_pages(
+        self,
+        job_id: str,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
+        status: Optional[str] = None,
+    ) -> CrawlExtractPagesResult:
+        """Async equivalent of WebgrphNamespace.get_crawl_extract_pages."""
+        return await arun(self._t, _ops_ce_pages(job_id, limit, offset, status))
+
+    async def export_crawl_extract(
+        self,
+        job_id: str,
+        format: str = "json",
+        shape: Optional[str] = None,
+        page_type: Optional[str] = None,
+        kind: Optional[str] = None,
+    ) -> AsyncExportDownload:
+        """Async equivalent of WebgrphNamespace.export_crawl_extract; close
+        the result with ``aclose`` or use it with ``async with``."""
+        response, client = await self._t.open_stream(
+            f"{_CE}/{seg(job_id)}/export",
+            _ce_export_params(format, shape, page_type, kind),
+        )
+        return AsyncExportDownload(response, client)
+
+    async def download_crawl_extract(
+        self,
+        job_id: str,
+        path: str,
+        format: str = "json",
+        shape: Optional[str] = None,
+        page_type: Optional[str] = None,
+        kind: Optional[str] = None,
+    ) -> SavedExport:
+        """Async equivalent of WebgrphNamespace.download_crawl_extract."""
+        return await asave_export(
+            await self.export_crawl_extract(job_id, format, shape, page_type, kind),
+            path,
+        )
+
+    async def cancel_crawl_extract(self, job_id: str) -> CrawlExtractCancelResult:
+        """Async equivalent of WebgrphNamespace.cancel_crawl_extract."""
+        return await arun(self._t, _ops_ce_cancel(job_id))
 
     async def reader_view(
         self,

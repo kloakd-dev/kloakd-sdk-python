@@ -482,6 +482,50 @@ class _HttpTransport(_TransportBase):
     def get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Any:
         return self.request("GET", path, params=params)
 
+    def open_stream(
+        self, path: str, params: Optional[Dict[str, Any]] = None
+    ) -> Tuple[Any, Optional[Any]]:
+        """GET ``path`` and return the response with its body unread, and
+        the HTTP client to close after it (None for the caller's own
+        client). An error status raises as ``request`` does, with the same
+        retries; once the API has answered 200 nothing is retried. The body
+        is read without a read timeout."""
+        httpx = _httpx()
+        url = self._url(path)
+        headers = self._auth_headers()
+        network_errors = self._retryable_errors()
+        timeout = httpx.Timeout(self._timeout, read=None)
+
+        attempt = 0
+        while True:
+            owned = None if self._http_client is not None else httpx.Client()
+            client: Any = self._http_client or owned
+            try:
+                response = client.send(
+                    client.build_request(
+                        "GET", url, params=params, headers=headers, timeout=timeout
+                    ),
+                    stream=True,
+                )
+                if response.status_code >= 400:
+                    try:
+                        response.read()
+                    finally:
+                        response.close()
+                    self._checked(response, raw=True)
+                return response, owned
+            except BaseException as exc:
+                if owned is not None:
+                    owned.close()
+                if not isinstance(exc, network_errors):
+                    raise
+                wait = self._retry_wait("GET", attempt, exc)
+                if wait is None:
+                    raise
+                _log_retry("Download", attempt, self._max_retries, wait, exc)
+                time.sleep(wait)
+                attempt += 1
+
     def post_following(
         self,
         path: str,
@@ -630,6 +674,48 @@ class _AsyncHttpTransport(_TransportBase):
 
     async def get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Any:
         return await self.request("GET", path, params=params)
+
+    async def open_stream(
+        self, path: str, params: Optional[Dict[str, Any]] = None
+    ) -> Tuple[Any, Optional[Any]]:
+        """Async equivalent of _HttpTransport.open_stream."""
+        import asyncio
+
+        httpx = _httpx()
+        url = self._url(path)
+        headers = self._auth_headers()
+        network_errors = self._retryable_errors()
+        timeout = httpx.Timeout(self._timeout, read=None)
+
+        attempt = 0
+        while True:
+            owned = None if self._http_client is not None else httpx.AsyncClient()
+            client: Any = self._http_client or owned
+            try:
+                response = await client.send(
+                    client.build_request(
+                        "GET", url, params=params, headers=headers, timeout=timeout
+                    ),
+                    stream=True,
+                )
+                if response.status_code >= 400:
+                    try:
+                        await response.aread()
+                    finally:
+                        await response.aclose()
+                    self._checked(response, raw=True)
+                return response, owned
+            except BaseException as exc:
+                if owned is not None:
+                    await owned.aclose()
+                if not isinstance(exc, network_errors):
+                    raise
+                wait = self._retry_wait("GET", attempt, exc)
+                if wait is None:
+                    raise
+                _log_retry("Async download", attempt, self._max_retries, wait, exc)
+                await asyncio.sleep(wait)
+                attempt += 1
 
     async def post_following(
         self,
