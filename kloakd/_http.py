@@ -445,6 +445,19 @@ class _HttpTransport(_TransportBase):
         """As ``request``, returning the raw body (a file download)."""
         return bytes(self._send(method, self._url(path), json_body, params, raw=True)[1])
 
+    def request_text(
+        self,
+        method: str,
+        path: str,
+        json_body: Optional[Dict[str, Any]] = None,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """As ``request``, returning the body as text and never parsing it
+        as JSON (a ``text/plain`` route). Same auth, retries and errors."""
+        return self.request_bytes(method, path, json_body, params).decode(
+            "utf-8", errors="replace"
+        )
+
     def _send(
         self,
         method: str,
@@ -635,6 +648,17 @@ class _AsyncHttpTransport(_TransportBase):
             method, self._url(path), json_body, params, raw=True
         )
         return bytes(content)
+
+    async def request_text(
+        self,
+        method: str,
+        path: str,
+        json_body: Optional[Dict[str, Any]] = None,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Async equivalent of _HttpTransport.request_text."""
+        content = await self.request_bytes(method, path, json_body, params)
+        return content.decode("utf-8", errors="replace")
 
     async def _send(
         self,

@@ -96,29 +96,56 @@ class PageNode:
         is_grouping: A grouping folder of the displayed tree, not a fetched
             page (``metadata.is_grouping``, new in 0.6.0). Only listed with
             ``include_grouping=True``.
-        crawl_parent_url: The page the crawl found it on, when a grouping
-            folder sits between them (new in 0.6.0). The crawl's stored page
-            dicts and its completion event carry it; the pages listing does
-            not (there ``parent_url`` already is that page), so it is None
-            for nodes read from ``get_crawl_pages``.
+        fetch_status: ``fetched``, ``unfetched`` (asked for and not
+            obtained) or ``not_requested`` (``metadata.fetch_status``); None
+            when the API sent none.
+        fetch_error: Why an unfetched page was not obtained
+            (``metadata.fetch_error``).
+
+    The pages listing carries no HTTP status code and no
+    ``crawl_parent_url``; the ``status_code`` and ``crawl_parent_url``
+    attributes of earlier versions were always None and are gone.
     """
 
     url: str
     depth: int
     title: Optional[str] = None
-    status_code: Optional[int] = None
     children: List[str] = field(default_factory=list)
     parent_url: Optional[str] = None
     is_grouping: bool = False
-    crawl_parent_url: Optional[str] = None
+    fetch_status: Optional[str] = None
+    fetch_error: Optional[str] = None
 
 
 @dataclass
 class CrawlResult:
     """Result of a Webgrph site crawl.
 
-    ``total_pages`` and ``max_depth_reached`` count fetched pages only (since
-    the 2 November 2026 API); the tree's grouping folders are not counted.
+    ``total_pages`` is the pages the crawl found and ``max_depth_reached``
+    the depth it reached; the tree's grouping folders are not counted.
+
+    ``url`` is the URL the caller gave: the status answer carries none, so
+    it is empty after ``wait_for_crawl`` unless passed there.
+
+    Three outcomes other than a full crawl:
+
+    * Held (``held`` True, ``status == "held_quota"``): the crawl is paused
+      because the organization's quota ran out. ``success`` is False,
+      ``error`` is None, ``message`` is the server's text and no pages are
+      loaded. The crawl keeps its id and resumes by itself when quota
+      returns (an upgrade, a top-up or a new billing period); after 30 days
+      held it ends ``failed`` with ``error_code == "held_quota_expired"``.
+      Call ``wait_for_crawl(crawl_id)`` again later.
+    * Partial (``is_partial`` True): the crawl stopped before asking for
+      every page it found; ``partial_reason`` is ``time_budget``,
+      ``max_pages`` or ``error``. When ``resumable`` is True,
+      ``continue_crawl(crawl_id)`` fetches the rest.
+    * Failed, cancelled or still running at the waiter's timeout:
+      ``success`` False and ``error`` set.
+
+    ``pages_discovered``, ``pages_fetched``, ``pages_unfetched``,
+    ``is_partial``, ``partial_reason``, ``resumable`` and ``error_code`` are
+    None until the crawl has reported them.
     """
 
     success: bool
@@ -128,16 +155,42 @@ class CrawlResult:
     max_depth_reached: int
     pages: List[PageNode] = field(default_factory=list)
     artifact_id: Optional[str] = None
+    #: Set by the SDK: ``crawl`` loads every page, so always False.
     has_more: bool = False
+    #: Set by the SDK: the number of page nodes loaded into ``pages``.
     total: int = 0
     next_cursor: Optional[str] = None
     error: Optional[str] = None
-    #: queued, crawling, completed, failed or cancelled.
+    #: queued, crawling, completed, failed, cancelled or held_quota.
     status: str = ""
+    is_partial: Optional[bool] = None
+    #: time_budget, max_pages or error.
+    partial_reason: Optional[str] = None
+    #: True when ``continue_crawl`` can fetch the pages this crawl left.
+    resumable: Optional[bool] = None
+    pages_discovered: Optional[int] = None
+    pages_fetched: Optional[int] = None
+    #: Pages asked for and not obtained.
+    pages_unfetched: Optional[int] = None
+    error_code: Optional[str] = None
+    #: The server's text for a held crawl; None otherwise.
+    message: Optional[str] = None
+    #: True when the crawl is paused for quota (status ``held_quota``).
+    held: bool = False
 
     @property
     def ok(self) -> bool:
         return self.success and self.error is None
+
+
+@dataclass
+class CrawlContinueResult:
+    """The answer to ``webgrph.continue_crawl``: the crawl was queued again
+    on the same id (``status`` "queued")."""
+
+    success: bool
+    crawl_id: str
+    status: str = ""
 
 
 @dataclass
@@ -185,11 +238,41 @@ class CrawlExtractJob:
 
 
 @dataclass
+class CrawlExtractCrawl:
+    """What a crawl-extract job's crawl really did (the status body's
+    ``crawl`` object). The counts and ``is_partial`` are None until the
+    crawl has reported them."""
+
+    #: The crawl's own status; ``held_quota`` while it is paused for quota.
+    status: Optional[str] = None
+    is_partial: Optional[bool] = None
+    #: time_budget, max_pages or error.
+    partial_reason: Optional[str] = None
+    pages_discovered: Optional[int] = None
+    pages_fetched: Optional[int] = None
+    pages_unfetched: Optional[int] = None
+    cancelled: bool = False
+    #: True when the crawl could not fetch its first page.
+    root_unfetched: bool = False
+    #: The crawl's error, set only when the crawl failed.
+    error: Optional[str] = None
+    error_code: Optional[str] = None
+
+
+@dataclass
 class CrawlExtractStatus:
     """The state of a crawl-extract job (``webgrph.get_crawl_extract``).
 
     ``status`` is ``queued``, ``crawling``, ``extracting``, ``completed``,
-    ``failed`` or ``cancelled``."""
+    ``failed`` or ``cancelled``.
+
+    The job itself is never held for quota: it keeps waiting while its
+    crawl is. ``held`` is True then (``crawl.status == "held_quota"``); the
+    crawl resumes by itself when the organization's quota returns, and
+    after 30 days held it ends failed with ``held_quota_expired``.
+
+    A completed job whose ``crawl.is_partial`` is True holds the rows of the
+    pages that crawl fetched, not of the whole site."""
 
     job_id: str
     status: str
@@ -215,10 +298,17 @@ class CrawlExtractStatus:
     pages_by_method: Dict[str, int] = field(default_factory=dict)
     #: The row shapes found: ``{shape, kind, rows, page_types, fields}``.
     shapes: List[Dict[str, Any]] = field(default_factory=list)
+    #: What the job's crawl did; None when the API sent no crawl object.
+    crawl: Optional[CrawlExtractCrawl] = None
 
     @property
     def finished(self) -> bool:
         return self.status in ("completed", "failed", "cancelled")
+
+    @property
+    def held(self) -> bool:
+        """True while the job's crawl is paused for quota."""
+        return self.crawl is not None and self.crawl.status == "held_quota"
 
     @property
     def ok(self) -> bool:
@@ -288,6 +378,30 @@ class CrawlExtractCancelResult:
 
 
 @dataclass
+class ExportCrawl:
+    """What the crawl behind a crawl-extract export did, read from the
+    export's ``X-Crawl-*`` response headers. Each value is None when its
+    header was not sent (the crawl had not reported it)."""
+
+    #: ``X-Crawl-Status``.
+    status: Optional[str] = None
+    #: ``X-Crawl-Partial``.
+    is_partial: Optional[bool] = None
+    #: ``X-Crawl-Partial-Reason``: time_budget, max_pages or error.
+    partial_reason: Optional[str] = None
+    #: ``X-Crawl-Pages-Discovered``.
+    pages_discovered: Optional[int] = None
+    #: ``X-Crawl-Pages-Fetched``.
+    pages_fetched: Optional[int] = None
+    #: ``X-Crawl-Pages-Unfetched``.
+    pages_unfetched: Optional[int] = None
+    #: ``X-Crawl-Cancelled``.
+    cancelled: Optional[bool] = None
+    #: ``X-Crawl-Root-Unfetched``: the crawl could not fetch its first page.
+    root_unfetched: Optional[bool] = None
+
+
+@dataclass
 class SavedExport:
     """An export written to a file (``webgrph.download_crawl_extract``,
     ``client.download_batch_job``)."""
@@ -296,8 +410,13 @@ class SavedExport:
     bytes: int
     content_type: Optional[str] = None
     filename: Optional[str] = None
-    #: ``X-Job-Status`` (the crawl-extract export only).
+    #: ``X-Job-Status``: set for crawl-extract exports; None for batch
+    #: exports, whose route sends no such header.
     job_status: Optional[str] = None
+    #: From the ``X-Crawl-*`` headers: set for crawl-extract exports; None
+    #: when the response carries no ``X-Crawl-*`` header (a job with no
+    #: crawl row, and every batch export).
+    crawl: Optional[ExportCrawl] = None
 
 
 # ---------------------------------------------------------------------------
@@ -326,7 +445,11 @@ class CrawlPage:
 
 @dataclass
 class SiteCrawlResult:
-    """Result of a crawl() orchestrator call — discover, fetch, and optionally extract."""
+    """Result of a crawl() orchestrator call — discover, fetch, and optionally extract.
+
+    When the crawl is held for quota, ``held`` is True, ``success`` False,
+    ``error`` None, ``message`` the server's text and ``pages`` empty; the
+    crawl resumes by itself on ``crawl_id`` (see ``CrawlResult``)."""
 
     success: bool
     url: str
@@ -336,6 +459,14 @@ class SiteCrawlResult:
     pages: List[CrawlPage] = field(default_factory=list)
     crawl_artifact_id: Optional[str] = None
     error: Optional[str] = None
+    #: The Webgrph crawl's id (for ``webgrph.wait_for_crawl``).
+    crawl_id: str = ""
+    #: The Webgrph crawl's status.
+    crawl_status: str = ""
+    #: True when the crawl is paused for quota (status ``held_quota``).
+    held: bool = False
+    #: The server's text for a held crawl; None otherwise.
+    message: Optional[str] = None
 
     @property
     def ok(self) -> bool:
@@ -356,13 +487,15 @@ class CrawlProgressEvent:
 
 
 # ---------------------------------------------------------------------------
-# Nexus — Strategy Engine (5-layer cognitive pipeline)
+# Nexus — Strategy Engine
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class NexusAnalyzeResult:
-    """Result of nexus.analyze()."""
+    """Result of nexus.analyze().
+
+    The API's answer has no ``error`` field: a failed call raises."""
 
     url: str
     perception_id: str = ""
@@ -371,15 +504,18 @@ class NexusAnalyzeResult:
     page_type: str = "unknown"
     confidence: float = 0.0
     artifact_id: Optional[str] = None
-    error: Optional[str] = None
 
     @property
     def ok(self) -> bool:
-        return self.error is None
+        """Always True: a result exists only when the call succeeded (a
+        failed call raises). Kept so code written for 0.6.0 still runs."""
+        return True
 
 @dataclass
 class NexusSynthesisResult:
-    """Result of nexus.synthesize()."""
+    """Result of nexus.synthesize().
+
+    The API's answer has no ``error`` field: a failed call raises."""
 
     url: str
     goal: str
@@ -391,11 +527,12 @@ class NexusSynthesisResult:
     steps: List[Dict[str, Any]] = field(default_factory=list)
     confidence: float = 0.0
     synthesis_time_ms: int = 0
-    error: Optional[str] = None
 
     @property
     def ok(self) -> bool:
-        return self.error is None
+        """Always True: a result exists only when the call succeeded (a
+        failed call raises). Kept so code written for 0.6.0 still runs."""
+        return True
 
 @dataclass
 class NexusSafetyCheck:
@@ -408,13 +545,13 @@ class NexusSafetyCheck:
 @dataclass
 class NexusVerifyResult:
     """Result of nexus.verify() (kobe-scraper modules/nexus/router.py
-    VerifyResponse)."""
+    VerifyResponse). The API's answer has no ``error`` field: a failed call
+    raises."""
 
     strategy_id: str
     verified: bool
     safety_score: float = 0.0
     violations: List[str] = field(default_factory=list)
-    error: Optional[str] = None
     #: "verified" or "unsafe" (None if the API sent none).
     status: Optional[str] = None
     risk_score: float = 0.0
@@ -424,7 +561,8 @@ class NexusVerifyResult:
 
     @property
     def ok(self) -> bool:
-        return self.verified and self.error is None
+        """True when the strategy was verified (the same as ``verified``)."""
+        return self.verified
 
 # ---------------------------------------------------------------------------
 # Parlyr — Conversational NLP
@@ -527,6 +665,54 @@ class SessionResult:
     @property
     def ok(self) -> bool:
         return self.success and self.error is None
+
+@dataclass
+class LoginSession:
+    """The answer to ``fetchyr.start_login_session``.
+
+    ``status`` is ``waiting_for_login`` (method "interactive": answer the
+    auth chain named by ``discovery_id`` and ``next``) or ``ready`` (method
+    "cookies": ``session_artifact_id`` can be used at once)."""
+
+    method: str
+    status: str
+    target_url: str
+    discovery_id: Optional[str] = None
+    session_artifact_id: Optional[str] = None
+    #: The calls to make next, by name.
+    next: Dict[str, str] = field(default_factory=dict)
+    #: method "cookies": how many of the cookies were kept.
+    cookies_kept: Optional[int] = None
+    #: method "cookies": the names of the cookies that were dropped.
+    cookies_dropped: List[str] = field(default_factory=list)
+    protections: Dict[str, Any] = field(default_factory=dict)
+    message: str = ""
+
+
+@dataclass
+class SessionStatus:
+    """A login session's state (``fetchyr.get_session``,
+    ``fetchyr.resume_session``).
+
+    ``status`` is ``active``, ``paused``, ``EXPIRED`` or ``INVALIDATED``.
+    A paused session has ``pause_reason`` ``logged_out``, ``rate_limited``
+    or ``challenged``."""
+
+    artifact_id: str
+    status: str
+    target_domain: Optional[str] = None
+    auth_method: Optional[str] = None
+    created_at: Optional[str] = None
+    expires_at: Optional[str] = None
+    last_used_at: Optional[str] = None
+    paused_at: Optional[str] = None
+    pause_reason: Optional[str] = None
+    pause_message: Optional[str] = None
+    #: What the session presents (no cookie values).
+    identity: Dict[str, Any] = field(default_factory=dict)
+    requests_this_hour: Optional[int] = None
+    protections: Dict[str, Any] = field(default_factory=dict)
+
 
 @dataclass
 class WorkflowResult:
@@ -656,13 +842,19 @@ class ExtractionResult:
     pages_scraped: int = 0
     artifact_id: Optional[str] = None
     job_id: Optional[str] = None
-    has_more: bool = False
-    total: int = 0
     error: Optional[str] = None
+    #: For a fresh scrape, the level it ran at: ``level1`` or ``level2``.
+    level: Optional[str] = None
+    #: Why that level: ``requested``, or (prefixed ``auto:``) what automatic
+    #: mode chose it for.
+    level_reason: Optional[str] = None
     #: True when a login page was detected at the target URL.
     auth_required: bool = False
     #: The auth-chain discovery id when ``auth_required`` is true.
     discovery_id: Optional[str] = None
+    #: When ``auth_required``: how to log in with your own account
+    #: (``fetchyr.start_login_session``) and pass the session artifact id.
+    login_options: Optional[Dict[str, Any]] = None
 
     @property
     def ok(self) -> bool:

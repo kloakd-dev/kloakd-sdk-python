@@ -34,6 +34,9 @@ print(f"  tier_used={fetch.tier_used}  bypassed={fetch.anti_bot_bypassed}  artif
 print("Crawling site hierarchy ...")
 crawl = client.webgrph.crawl(TARGET, max_depth=2, max_pages=50)
 print(f"  crawl {crawl.crawl_id}: {crawl.status}, {crawl.total_pages} pages")
+if crawl.held:
+    # Paused for quota, not failed: it resumes by itself on the same id.
+    raise SystemExit(f"  crawl held for quota: {crawl.message}")
 if not crawl.ok:
     raise SystemExit(f"  crawl failed: {crawl.error}")
 

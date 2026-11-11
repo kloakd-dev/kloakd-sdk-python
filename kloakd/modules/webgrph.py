@@ -11,6 +11,12 @@ Usage::
     print(crawl.status, crawl.total_pages)
     site = client.skanyr.site_from_crawl(crawl.crawl_id)
 
+A crawl can come back held (``crawl.held``: paused because the
+organization's quota ran out; it resumes by itself on the same id) or
+partial (``crawl.is_partial``; when ``crawl.resumable``,
+``continue_crawl`` fetches the rest). ``wait_for_crawl(crawl_id)`` waits
+for a crawl by its id. See ``CrawlResult``.
+
 Crawl, extract and download in one job (added after 0.6.0)::
 
     job = client.webgrph.crawl_extract(
@@ -45,8 +51,10 @@ from kloakd._download import (
 )
 from kloakd.errors import JobFailedError, JobTimeoutError
 from kloakd.models import (
+    CrawlContinueResult,
     CrawlEvent,
     CrawlExtractCancelResult,
+    CrawlExtractCrawl,
     CrawlExtractJob,
     CrawlExtractPage,
     CrawlExtractPagesResult,
@@ -65,28 +73,33 @@ if TYPE_CHECKING:
 _DEFAULT_POLL_TIMEOUT = 30 * 60.0
 _DEFAULT_POLL_INTERVAL = 3.0
 _FINISHED = ("completed", "failed", "cancelled")
+#: A crawl paused because the organization's quota ran out (kobe-scraper
+#: billing/held_work.py). Not an end: the crawl resumes on the same id.
+_HELD = "held_quota"
+#: The statuses a crawl waiter stops polling on.
+_WAIT_ENDS = _FINISHED + (_HELD,)
 
 
 def _node(p: Dict[str, Any]) -> PageNode:
-    """A page node from the pages listing (HierarchyNode, ``metadata``) or a
-    stored page dict (flat ``is_grouping`` / ``crawl_parent_url``)."""
+    """A page node from the pages listing (kobe-scraper
+    modules/webgrph/router.py HierarchyNodeResponse and its ``metadata``)."""
     meta = p.get("metadata") or {}
     return PageNode(
         url=p.get("url", ""),
         depth=int(p.get("depth") or 0),
-        title=meta.get("title") or p.get("title"),
-        status_code=p.get("status_code"),
-        children=p.get("children_urls", p.get("children", [])) or [],
+        title=meta.get("title"),
+        children=p.get("children_urls") or [],
         parent_url=p.get("parent_url"),
-        is_grouping=bool(meta.get("is_grouping", p.get("is_grouping", False))),
-        crawl_parent_url=p.get("crawl_parent_url") or meta.get("crawl_parent_url"),
+        is_grouping=bool(meta.get("is_grouping", False)),
+        fetch_status=meta.get("fetch_status"),
+        fetch_error=meta.get("fetch_error"),
     )
 
 
 def _crawl_body(
     url: str,
-    max_depth: int,
-    max_pages: int,
+    max_depth: Optional[int],
+    max_pages: Optional[int],
     include_external_links: bool,
     session_artifact_id: Optional[str],
     fast_mode: Optional[bool],
@@ -137,10 +150,20 @@ def _pages_params(
     return params
 
 
+def _opt_bool(value: Any) -> Optional[bool]:
+    return bool(value) if value is not None else None
+
+
 def _result(
     status: Dict[str, Any], url: str, pages: List[PageNode], error: Optional[str] = None
 ) -> CrawlResult:
+    """A CrawlResult from a crawl's status body (kobe-scraper
+    modules/webgrph/router.py CrawlStatusResponse, which has no ``url``)."""
     state = str(status.get("status") or "")
+    held = state == _HELD
+    pages_discovered = status.get("pages_discovered")
+    pages_fetched = status.get("pages_fetched")
+    pages_unfetched = status.get("pages_unfetched")
     return CrawlResult(
         success=state == "completed" and error is None,
         crawl_id=str(status.get("crawl_id") or ""),
@@ -152,8 +175,68 @@ def _result(
         has_more=False,
         total=len(pages),
         next_cursor=None,
-        error=error or status.get("error"),
+        # A held crawl has not failed: its message is not an error.
+        error=None if held else error or status.get("error"),
         status=state,
+        is_partial=_opt_bool(status.get("is_partial")),
+        partial_reason=status.get("partial_reason"),
+        resumable=_opt_bool(status.get("resumable")),
+        pages_discovered=(
+            int(pages_discovered) if pages_discovered is not None else None
+        ),
+        pages_fetched=int(pages_fetched) if pages_fetched is not None else None,
+        pages_unfetched=(
+            int(pages_unfetched) if pages_unfetched is not None else None
+        ),
+        error_code=status.get("error_code"),
+        message=status.get("message"),
+        held=held,
+    )
+
+
+def _with_id(status: Dict[str, Any], crawl_id: str) -> Dict[str, Any]:
+    return {**status, "crawl_id": status.get("crawl_id") or crawl_id}
+
+
+def _still_running(status: Dict[str, Any], url: str, timeout: float) -> CrawlResult:
+    return _result(
+        status,
+        url,
+        [],
+        error=f"Crawl {status.get('crawl_id')} still running after {timeout}s",
+    )
+
+
+def _without_pages(status: Dict[str, Any], url: str) -> Optional[CrawlResult]:
+    """The result of a crawl a waiter stopped on that has no pages to load:
+    held (no error) or failed/cancelled (``error`` set). None for a
+    completed crawl, whose pages the caller loads."""
+    state = status.get("status")
+    if state == "completed":
+        return None
+    if state == _HELD:
+        return _result(status, url, [])
+    return _result(status, url, [], error=status.get("error") or f"Crawl {state}")
+
+
+def _continued(crawl_id: str) -> Callable[[Any], CrawlContinueResult]:
+    def parse(body: Any) -> CrawlContinueResult:
+        raw = as_dict(body)
+        return CrawlContinueResult(
+            success=bool(raw.get("success", False)),
+            crawl_id=str(raw.get("crawl_id") or crawl_id),
+            status=str(raw.get("status") or ""),
+        )
+
+    return parse
+
+
+def _ops_continue(crawl_id: str) -> Op[CrawlContinueResult]:
+    return _Op(
+        "POST",
+        f"webgrph/crawl/{seg(crawl_id)}/continue",
+        {},
+        parse=_continued(crawl_id),
     )
 
 
@@ -242,6 +325,25 @@ def _ce_job(url: str) -> Callable[[Any], CrawlExtractJob]:
     return parse
 
 
+def _ce_crawl(raw: Any) -> Optional[CrawlExtractCrawl]:
+    """The status body's ``crawl`` object (kobe-scraper
+    modules/webgrph/crawl_extract.py crawl_truth); None when it is null."""
+    if not isinstance(raw, dict):
+        return None
+    return CrawlExtractCrawl(
+        status=raw.get("status"),
+        is_partial=_opt_bool(raw.get("is_partial")),
+        partial_reason=raw.get("partial_reason"),
+        pages_discovered=_opt_int(raw.get("pages_discovered")),
+        pages_fetched=_opt_int(raw.get("pages_fetched")),
+        pages_unfetched=_opt_int(raw.get("pages_unfetched")),
+        cancelled=bool(raw.get("cancelled", False)),
+        root_unfetched=bool(raw.get("root_unfetched", False)),
+        error=raw.get("error"),
+        error_code=raw.get("error_code"),
+    )
+
+
 def _ce_status(job_id: str) -> Callable[[Any], CrawlExtractStatus]:
     def parse(body: Any) -> CrawlExtractStatus:
         raw = as_dict(body)
@@ -267,6 +369,7 @@ def _ce_status(job_id: str) -> Callable[[Any], CrawlExtractStatus]:
             links=raw.get("links") or {},
             pages_by_method=raw.get("pages_by_method") or {},
             shapes=raw.get("shapes") or [],
+            crawl=_ce_crawl(raw.get("crawl")),
         )
 
     return parse
@@ -453,8 +556,8 @@ class WebgrphNamespace:
     def start_crawl(
         self,
         url: str,
-        max_depth: int = 3,
-        max_pages: int = 100,
+        max_depth: Optional[int] = None,
+        max_pages: Optional[int] = None,
         include_external_links: bool = False,
         session_artifact_id: Optional[str] = None,
         fast_mode: Optional[bool] = None,
@@ -462,7 +565,11 @@ class WebgrphNamespace:
         scope: Optional[Dict[str, Any]] = None,
         budget: Optional[Dict[str, Any]] = None,
     ) -> str:
-        """Start a crawl (the API answers 202); returns its crawl id."""
+        """Start a crawl (the API answers 202); returns its crawl id.
+
+        ``max_depth`` and ``max_pages`` are sent only when given; left out,
+        the API uses the plan's default (the SDK no longer sends 3 and 100).
+        """
         raw = self._t.post(
             "webgrph/crawl",
             _crawl_body(
@@ -482,8 +589,8 @@ class WebgrphNamespace:
     def crawl(
         self,
         url: str,
-        max_depth: int = 3,
-        max_pages: int = 100,
+        max_depth: Optional[int] = None,
+        max_pages: Optional[int] = None,
         include_external_links: bool = False,
         session_artifact_id: Optional[str] = None,
         fast_mode: Optional[bool] = None,
@@ -495,10 +602,23 @@ class WebgrphNamespace:
         poll_interval: float = _DEFAULT_POLL_INTERVAL,
     ) -> CrawlResult:
         """
-        Crawl a site: start it, wait until it finishes, and load every page
-        node. A failed crawl, or one still running after ``poll_timeout``,
-        comes back with ``success=False`` and ``error`` set. With
-        ``wait=False`` only the crawl id is returned (status "queued").
+        Crawl a site: start it, wait until it ends, and load every page
+        node. See ``wait_for_crawl`` for what comes back; in short:
+
+        * completed: ``success`` True and ``pages`` loaded. It can still be
+          partial (``is_partial``); when ``resumable``, ``continue_crawl``
+          fetches the rest.
+        * held for quota: ``held`` True, ``status == "held_quota"``,
+          ``message`` set, ``error`` None, no pages. Not an error and not
+          raised: the crawl resumes by itself. Call
+          ``wait_for_crawl(result.crawl_id)`` again later.
+        * failed, cancelled, or still running after ``poll_timeout``:
+          ``success`` False and ``error`` set.
+
+        ``max_depth`` and ``max_pages`` are sent only when given; left out,
+        the API uses the plan's default. With ``wait=False`` only the crawl
+        id is returned (the SDK sets ``status`` to "queued"; the start
+        answer carries no status).
         """
         crawl_id = self.start_crawl(
             url,
@@ -513,40 +633,100 @@ class WebgrphNamespace:
         )
         if not wait:
             return _result({"crawl_id": crawl_id, "status": "queued"}, url, [])
+        return self.wait_for_crawl(crawl_id, poll_timeout, poll_interval, url=url)
+
+    def wait_for_crawl(
+        self,
+        crawl_id: str,
+        poll_timeout: float = _DEFAULT_POLL_TIMEOUT,
+        poll_interval: float = _DEFAULT_POLL_INTERVAL,
+        url: str = "",
+    ) -> CrawlResult:
+        """Wait for a crawl by its id and load its page nodes.
+
+        Polls ``get_crawl_status`` until the crawl is completed, failed,
+        cancelled or held, and never raises for any of those:
+
+        * completed: ``success`` True, ``pages`` loaded, the outcome fields
+          set (``is_partial``, ``partial_reason``, ``resumable``,
+          ``pages_discovered``, ``pages_fetched``, ``pages_unfetched``).
+        * held (``status == "held_quota"``): ``held`` True, ``success``
+          False, ``error`` None, ``message`` the server's text, no pages
+          loaded. The crawl is paused because the organization's quota ran
+          out. It keeps its id and resumes by itself when quota returns (an
+          upgrade, a top-up or a new billing period); after 30 days held it
+          ends ``failed`` with ``error_code == "held_quota_expired"``. Call
+          this method again later with the same id.
+        * failed or cancelled: ``success`` False, ``error`` set.
+        * still running after ``poll_timeout`` seconds: ``success`` False,
+          ``error`` says so; the crawl carries on.
+
+        Use it after ``crawl(..., wait=False)``, after a held result, and
+        after ``continue_crawl``.
+
+        Args:
+            crawl_id: The crawl.
+            poll_timeout: Seconds to wait.
+            poll_interval: Seconds between two looks.
+            url: The crawl's URL, to have it on the result (the status
+                answer carries none; empty when not given).
+        """
         deadline = time.monotonic() + poll_timeout
-        status = self.get_crawl_status(crawl_id)
-        while status.get("status") not in _FINISHED:
+        status = _with_id(self.get_crawl_status(crawl_id), crawl_id)
+        while status.get("status") not in _WAIT_ENDS:
             if time.monotonic() + poll_interval > deadline:
-                return _result(
-                    status,
-                    url,
-                    [],
-                    error=f"Crawl {crawl_id} still running after {poll_timeout}s",
-                )
+                return _still_running(status, url, poll_timeout)
             time.sleep(poll_interval)
-            status = self.get_crawl_status(crawl_id)
-        if status.get("status") != "completed":
-            return _result(
-                status,
-                url,
-                [],
-                error=status.get("error") or f"Crawl {status.get('status')}",
-            )
+            status = _with_id(self.get_crawl_status(crawl_id), crawl_id)
+        ended = _without_pages(status, url)
+        if ended is not None:
+            return ended
         return _result(status, url, self.crawl_all_pages(crawl_id))
 
+    def continue_crawl(self, crawl_id: str) -> CrawlContinueResult:
+        """Continue a crawl that ended partial at its time budget.
+
+        Only for a crawl that has ended and whose ``resumable`` is True.
+        The crawl goes back to ``queued`` on the same id and fetches the
+        pages it left, with a new time budget; pages already fetched are
+        not fetched again. Then wait by id again::
+
+            crawl = client.webgrph.crawl(url)
+            if crawl.resumable:
+                client.webgrph.continue_crawl(crawl.crawl_id)
+                crawl = client.webgrph.wait_for_crawl(crawl.crawl_id, url=url)
+
+        Raises:
+            ApiError: 409 when the crawl is not one that stopped at its time
+                budget (an unknown crawl id included), has not ended, or is
+                already being continued. The quota checks of a new crawl
+                apply too (their errors are the ones ``crawl`` raises).
+        """
+        return run(self._t, _ops_continue(crawl_id))
+
     def crawl_all(self, url: str, **kwargs: Any) -> List[PageNode]:
-        """Every page node of a finished crawl (same options as ``crawl``)."""
+        """Every page node of a completed crawl (same options as ``crawl``).
+
+        Returns an empty list, without raising, when the crawl did not
+        complete: failed, cancelled, still running at ``poll_timeout``, or
+        held for quota. The list alone cannot tell these apart, and it does
+        not say whether the crawl was partial; call ``crawl`` for that.
+        """
         return self.crawl(url, **kwargs).pages
 
     def crawl_stream(
         self,
         url: str,
-        max_depth: int = 3,
-        max_pages: int = 100,
+        max_depth: Optional[int] = None,
+        max_pages: Optional[int] = None,
         include_external_links: bool = False,
         session_artifact_id: Optional[str] = None,
     ) -> Iterator[CrawlEvent]:
-        """Start a crawl and yield its progress events (Server-Sent Events)."""
+        """Start a crawl and yield its progress events (Server-Sent Events).
+
+        The stream ends when the crawl is completed, failed, cancelled or
+        held for quota. ``max_depth`` and ``max_pages`` are sent only when
+        given."""
         crawl_id = self.start_crawl(
             url, max_depth, max_pages, include_external_links, session_artifact_id
         )
@@ -678,11 +858,19 @@ class WebgrphNamespace:
     ) -> CrawlExtractStatus:
         """Poll a job until it ends; returns its last state (completed,
         failed or cancelled: check ``ok``). Still running after
-        ``poll_timeout`` seconds raises JobTimeoutError; the job carries on."""
+        ``poll_timeout`` seconds raises JobTimeoutError; the job carries on.
+
+        A job whose crawl is held for quota (``crawl.status ==
+        "held_quota"``) is returned at once with ``held`` True and
+        ``finished`` False, instead of being polled to the timeout: the
+        crawl is paused because the organization's quota ran out, it
+        resumes by itself when quota returns, and the job then carries on
+        (after 30 days held the crawl ends failed with
+        ``held_quota_expired``). Call this method again later."""
         deadline = time.monotonic() + poll_timeout
         while True:
             status = self.get_crawl_extract(job_id)
-            if status.finished:
+            if status.finished or status.held:
                 return status
             if time.monotonic() + poll_interval > deadline:
                 raise _ce_still_running(job_id, poll_timeout)
@@ -703,7 +891,9 @@ class WebgrphNamespace:
         poll_timeout: float = _CRAWL_EXTRACT_POLL_TIMEOUT,
     ) -> CrawlExtractStatus:
         """Crawl a site and extract every page: start the job and wait until
-        it ends; returns its last state (completed or cancelled).
+        it ends; returns its last state (completed or cancelled), or the
+        state of a job whose crawl is held for quota (``held`` True,
+        ``finished`` False: see ``wait_for_crawl_extract``).
 
         Raises:
             JobFailedError: the job failed (the rows it wrote can still be
@@ -805,8 +995,13 @@ class WebgrphNamespace:
     ) -> ExportDownload:
         """A job's rows as a streamed file (``format``: json, ndjson or csv;
         the CSV starts with a UTF-8 byte order mark). A job that has not
-        completed exports the rows it has (``job_status``). Close the
-        result, or use it as a context manager.
+        completed exports the rows it has (``job_status``, from the
+        ``X-Job-Status`` header). ``crawl`` says what the job's crawl did,
+        from the ``X-Crawl-*`` headers (``status``, ``is_partial``,
+        ``partial_reason``, ``pages_discovered``, ``pages_fetched``,
+        ``pages_unfetched``, ``cancelled``, ``root_unfetched``; each None
+        when its header was not sent, the whole object None when none
+        was). Close the result, or use it as a context manager.
 
         Raises:
             ValueError: ``format`` is not json, ndjson or csv.
@@ -827,7 +1022,8 @@ class WebgrphNamespace:
         kind: Optional[str] = None,
     ) -> SavedExport:
         """Write a job's rows to the file ``path`` as they arrive. The file
-        is created once the API has answered 200."""
+        is created once the API has answered 200. The result carries
+        ``job_status`` and ``crawl`` as ``export_crawl_extract`` does."""
         return save_export(
             self.export_crawl_extract(job_id, format, shape, page_type, kind), path
         )
@@ -919,8 +1115,8 @@ class AsyncWebgrphNamespace:
     async def start_crawl(
         self,
         url: str,
-        max_depth: int = 3,
-        max_pages: int = 100,
+        max_depth: Optional[int] = None,
+        max_pages: Optional[int] = None,
         include_external_links: bool = False,
         session_artifact_id: Optional[str] = None,
         fast_mode: Optional[bool] = None,
@@ -947,8 +1143,8 @@ class AsyncWebgrphNamespace:
     async def crawl(
         self,
         url: str,
-        max_depth: int = 3,
-        max_pages: int = 100,
+        max_depth: Optional[int] = None,
+        max_pages: Optional[int] = None,
         include_external_links: bool = False,
         session_artifact_id: Optional[str] = None,
         fast_mode: Optional[bool] = None,
@@ -973,39 +1169,53 @@ class AsyncWebgrphNamespace:
         )
         if not wait:
             return _result({"crawl_id": crawl_id, "status": "queued"}, url, [])
+        return await self.wait_for_crawl(
+            crawl_id, poll_timeout, poll_interval, url=url
+        )
+
+    async def wait_for_crawl(
+        self,
+        crawl_id: str,
+        poll_timeout: float = _DEFAULT_POLL_TIMEOUT,
+        poll_interval: float = _DEFAULT_POLL_INTERVAL,
+        url: str = "",
+    ) -> CrawlResult:
+        """Async equivalent of WebgrphNamespace.wait_for_crawl: a crawl held
+        for quota comes back with ``held`` True (not raised, no pages)."""
         deadline = time.monotonic() + poll_timeout
-        status = await self.get_crawl_status(crawl_id)
-        while status.get("status") not in _FINISHED:
+        status = _with_id(await self.get_crawl_status(crawl_id), crawl_id)
+        while status.get("status") not in _WAIT_ENDS:
             if time.monotonic() + poll_interval > deadline:
-                return _result(
-                    status,
-                    url,
-                    [],
-                    error=f"Crawl {crawl_id} still running after {poll_timeout}s",
-                )
+                return _still_running(status, url, poll_timeout)
             await asyncio.sleep(poll_interval)
-            status = await self.get_crawl_status(crawl_id)
-        if status.get("status") != "completed":
-            return _result(
-                status,
-                url,
-                [],
-                error=status.get("error") or f"Crawl {status.get('status')}",
-            )
+            status = _with_id(await self.get_crawl_status(crawl_id), crawl_id)
+        ended = _without_pages(status, url)
+        if ended is not None:
+            return ended
         return _result(status, url, await self.crawl_all_pages(crawl_id))
 
+    async def continue_crawl(self, crawl_id: str) -> CrawlContinueResult:
+        """Async equivalent of WebgrphNamespace.continue_crawl."""
+        return await arun(self._t, _ops_continue(crawl_id))
+
     async def crawl_all(self, url: str, **kwargs: Any) -> List[PageNode]:
+        """Async equivalent of WebgrphNamespace.crawl_all: an empty list
+        when the crawl did not complete (held for quota included)."""
         return (await self.crawl(url, **kwargs)).pages
 
     async def crawl_stream(
         self,
         url: str,
-        max_depth: int = 3,
-        max_pages: int = 100,
+        max_depth: Optional[int] = None,
+        max_pages: Optional[int] = None,
         include_external_links: bool = False,
         session_artifact_id: Optional[str] = None,
     ) -> AsyncIterator[CrawlEvent]:
-        """Start a crawl and yield its progress events (Server-Sent Events)."""
+        """Start a crawl and yield its progress events (Server-Sent Events).
+
+        The stream ends when the crawl is completed, failed, cancelled or
+        held for quota. ``max_depth`` and ``max_pages`` are sent only when
+        given."""
         crawl_id = await self.start_crawl(
             url, max_depth, max_pages, include_external_links, session_artifact_id
         )
@@ -1103,7 +1313,7 @@ class AsyncWebgrphNamespace:
         deadline = time.monotonic() + poll_timeout
         while True:
             status = await self.get_crawl_extract(job_id)
-            if status.finished:
+            if status.finished or status.held:
                 return status
             if time.monotonic() + poll_interval > deadline:
                 raise _ce_still_running(job_id, poll_timeout)

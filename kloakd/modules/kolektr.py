@@ -144,11 +144,12 @@ def _parse_extraction(raw: Dict[str, Any], url: str) -> ExtractionResult:
         pages_scraped=raw.get("pages_scraped", 0),
         artifact_id=artifact.get("artifact_id") if artifact else raw.get("artifact_id"),
         job_id=raw.get("job_id"),
-        has_more=raw.get("has_more", False),
-        total=raw.get("total", raw.get("total_records", 0)),
         error=raw.get("error"),
+        level=raw.get("level"),
+        level_reason=raw.get("level_reason"),
         auth_required=bool(raw.get("auth_required", False)),
         discovery_id=raw.get("discovery_id"),
+        login_options=raw.get("login_options"),
     )
 
 

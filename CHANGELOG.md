@@ -8,11 +8,20 @@ Format: [Semantic Versioning](https://semver.org/). Types: `Added`, `Changed`, `
 
 ## [Unreleased]
 
-For the API on kobe-scraper integration/2026-11-12 (e5e358aa). **Breaking**:
-two methods are removed, so the next release is 0.7.0. `ROUTES.md` lists the
-routes.
+For the API at kobe-scraper 6bd19e9b (main, 12 November 2026). **Breaking**:
+two methods and some attributes the API never filled are removed, and a
+crawl without `max_depth` or `max_pages` now runs to the plan's limits, so
+the next release is 0.7.0. `ROUTES.md` lists the routes.
 
 ### Removed
+- `PageNode.status_code` and `PageNode.crawl_parent_url`: the pages listing
+  sends neither, so both were always None.
+- `ExtractionResult.has_more` and `total` (`kolektr.page`, `extract_html`):
+  the extract answer has neither. `total_records` is the count; the API
+  returns every record in the one response.
+- `NexusAnalyzeResult.error`, `NexusSynthesisResult.error`,
+  `NexusVerifyResult.error`: no answer carries it; a failed call raises.
+  `ok` stays.
 - `nexus.execute` and `NexusExecuteResult` (sync and async): the API removed
   `POST nexus/execute`; the call could only fail.
 - `nexus.knowledge` and `NexusKnowledgeResult`: the route now takes
@@ -35,10 +44,51 @@ routes.
   async): a batch job's results as json, ndjson or csv.
 - `NexusVerifyResult.status`, `risk_score`, `safety_checks`
   (`NexusSafetyCheck`), `verification_result_id`, `duration_ms`.
+- Crawls held for quota (sync and async). A crawl whose organization ran
+  out of quota is paused (`held_quota`), not failed, and resumes by itself.
+  `webgrph.crawl`, `crawl_all` and the new `wait_for_crawl` return it at
+  once with `CrawlResult.held` True, `success` False, `error` None and
+  `message` the server's text, instead of polling to the timeout.
+  `client.crawl` returns `SiteCrawlResult.held` with the new `crawl_id`,
+  `crawl_status` and `message`; `crawl_stream`'s `discovery_complete` event
+  carries `crawl_id`, `status`, `held` and `message`.
+  `CrawlExtractStatus.held` is True while a crawl-extract job's crawl is
+  held, and `wait_for_crawl_extract` / `crawl_extract` return the job then.
+- `webgrph.wait_for_crawl(crawl_id, poll_timeout, poll_interval, url="")`:
+  wait for a crawl you already started (or one that was held or continued).
+- What a crawl did: `CrawlResult.is_partial`, `partial_reason`, `resumable`,
+  `pages_discovered`, `pages_fetched`, `pages_unfetched`, `error_code`,
+  `message`. A crawl that stopped early ends `completed` with `is_partial`
+  True.
+- `webgrph.continue_crawl(crawl_id)` (`CrawlContinueResult`): fetch the rest
+  of a partial crawl on the same id; 409 (`ApiError`) when it cannot be
+  continued.
+- `CrawlExtractStatus.crawl` (`CrawlExtractCrawl`): the status, counts and
+  partial reason of the job's crawl.
+- `ExportDownload.crawl`, `AsyncExportDownload.crawl` and
+  `SavedExport.crawl` (`ExportCrawl`), read from a crawl-extract export's
+  `X-Crawl-*` headers; None for a batch export, which sends none (its
+  `job_status` is None too).
+- Login sessions for your own account (`fetchyr`, sync and async):
+  `start_login_session` (`LoginSession`), `get_session` (`SessionStatus`),
+  `resume_session`.
+- `PageNode.fetch_status` and `fetch_error`.
+- `ExtractionResult.level`, `level_reason` and `login_options`.
 
 ### Changed
+- `max_depth` and `max_pages` are sent only when given (`webgrph.crawl`,
+  `crawl_all`, `crawl_stream`, `client.crawl`, `client.crawl_stream`). They
+  were sent as 3 and 100; without them the plan's limits now apply.
+- `nexus.reason(timeout_secs=...)` accepts a fraction of a second.
+- The route list the contract test checks against was generated again
+  (292 routes); the test also covers the new methods.
 - Exports are streamed and read without a read timeout; an error status is
   raised (and retried) as for any GET before the body is handed on.
+
+### Fixed
+- `skanyr.get_extraction_text` returns the body as it is. It was parsed as
+  JSON first, so a text such as `123` or `{"a": 1}` did not come back as a
+  string.
 
 ## [0.6.0] — 2026-11-03
 

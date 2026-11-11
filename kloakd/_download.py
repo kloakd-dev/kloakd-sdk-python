@@ -13,7 +13,7 @@ import re
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
-from kloakd.models import SavedExport
+from kloakd.models import ExportCrawl, SavedExport
 
 EXPORT_FORMATS = ("json", "ndjson", "csv")
 
@@ -35,6 +35,43 @@ def _filename(disposition: str | None) -> str | None:
     return match.group(1) if match else None
 
 
+def _header_bool(value: str | None) -> bool | None:
+    """``true`` / ``false`` as the API writes a boolean header; None when
+    the header is absent (or is neither)."""
+    text = (value or "").strip().lower()
+    if text == "true":
+        return True
+    if text == "false":
+        return False
+    return None
+
+
+def _header_int(value: str | None) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except ValueError:
+        return None
+
+
+def _export_crawl(headers: Any) -> ExportCrawl | None:
+    """The ``X-Crawl-*`` headers of a crawl-extract export (kobe-scraper
+    modules/webgrph/crawl_extract_router.py _crawl_headers). A value the
+    crawl has not reported has no header; None when there is no
+    ``X-Crawl-*`` header at all."""
+    if not any(str(name).lower().startswith("x-crawl-") for name in headers):
+        return None
+    return ExportCrawl(
+        status=headers.get("x-crawl-status"),
+        is_partial=_header_bool(headers.get("x-crawl-partial")),
+        partial_reason=headers.get("x-crawl-partial-reason"),
+        pages_discovered=_header_int(headers.get("x-crawl-pages-discovered")),
+        pages_fetched=_header_int(headers.get("x-crawl-pages-fetched")),
+        pages_unfetched=_header_int(headers.get("x-crawl-pages-unfetched")),
+        cancelled=_header_bool(headers.get("x-crawl-cancelled")),
+        root_unfetched=_header_bool(headers.get("x-crawl-root-unfetched")),
+    )
+
+
 class _Export:
     """What an export's response headers say."""
 
@@ -48,10 +85,16 @@ class _Export:
         self.filename: str | None = _filename(
             response.headers.get("content-disposition")
         )
-        #: The job's status when the export began (``X-Job-Status``; the
-        #: crawl-extract export only). Not ``completed`` means the file holds
-        #: the rows stored so far.
+        #: The job's status when the export began (``X-Job-Status``). Set
+        #: for crawl-extract exports, where a value other than ``completed``
+        #: means the file holds the rows stored so far. None for batch
+        #: exports, whose route sends no such header.
         self.job_status: str | None = response.headers.get("x-job-status")
+        #: What the job's crawl did, from the ``X-Crawl-*`` headers. Set
+        #: for crawl-extract exports; None when the response carries no
+        #: ``X-Crawl-*`` header (a job with no crawl row, and every batch
+        #: export). Each value is None when its header was not sent.
+        self.crawl: ExportCrawl | None = _export_crawl(response.headers)
 
     def __repr__(self) -> str:
         return (
@@ -128,6 +171,7 @@ def _saved(export: _Export, path: str, size: int) -> SavedExport:
         content_type=export.content_type,
         filename=export.filename,
         job_status=export.job_status,
+        crawl=export.crawl,
     )
 
 

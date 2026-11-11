@@ -14,6 +14,19 @@ Usage::
 ``authenticate``, ``detect_forms``, ``fill_form`` and ``detect_mfa`` may be
 handed off as a job (HTTP 202, after about 85 s); the SDK follows it to the
 same result.
+
+Log in with your own account (``start_login_session``), for a site that
+answered ``auth_required``::
+
+    login = client.fetchyr.start_login_session(
+        "https://acme.example/account",
+        method="cookies",
+        cookies=[{"name": "sid", "value": "...", "domain": "acme.example"}],
+        user_agent="Mozilla/5.0 ...",
+    )
+    status = client.fetchyr.get_session(login.session_artifact_id)
+    if status.status == "paused" and status.pause_reason != "logged_out":
+        status = client.fetchyr.resume_session(status.artifact_id)
 """
 
 from __future__ import annotations
@@ -23,9 +36,11 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 from kloakd.models import (
     DuplicateCheckResult,
     FormDetectionResult,
+    LoginSession,
     MfaChallenge,
     MfaDetectionResult,
     SessionResult,
+    SessionStatus,
     WorkflowExecutionResult,
     WorkflowResult,
 )
@@ -244,6 +259,90 @@ def _list_workflows(
     )
 
 
+def _login_session(target_url: str) -> Callable[[Dict[str, Any]], LoginSession]:
+    """kobe-scraper modules/fetchyr/router.py LoginSessionResponse."""
+
+    def parse(raw: Dict[str, Any]) -> LoginSession:
+        return LoginSession(
+            method=str(raw.get("method") or ""),
+            status=str(raw.get("status") or ""),
+            target_url=str(raw.get("target_url") or target_url),
+            discovery_id=raw.get("discovery_id"),
+            session_artifact_id=raw.get("session_artifact_id"),
+            next=raw.get("next") or {},
+            cookies_kept=raw.get("cookies_kept"),
+            cookies_dropped=raw.get("cookies_dropped") or [],
+            protections=raw.get("protections") or {},
+            message=str(raw.get("message") or ""),
+        )
+
+    return parse
+
+
+def _session_status(artifact_id: str) -> Callable[[Dict[str, Any]], SessionStatus]:
+    """kobe-scraper modules/fetchyr/router.py SessionStatusResponse."""
+
+    def parse(raw: Dict[str, Any]) -> SessionStatus:
+        return SessionStatus(
+            artifact_id=str(raw.get("artifact_id") or artifact_id),
+            status=str(raw.get("status") or ""),
+            target_domain=raw.get("target_domain"),
+            auth_method=raw.get("auth_method"),
+            created_at=raw.get("created_at"),
+            expires_at=raw.get("expires_at"),
+            last_used_at=raw.get("last_used_at"),
+            paused_at=raw.get("paused_at"),
+            pause_reason=raw.get("pause_reason"),
+            pause_message=raw.get("pause_message"),
+            identity=raw.get("identity") or {},
+            requests_this_hour=raw.get("requests_this_hour"),
+            protections=raw.get("protections") or {},
+        )
+
+    return parse
+
+
+def _start_login_session(
+    target_url: str,
+    method: Optional[str],
+    cookies: Optional[List[Dict[str, Any]]],
+    user_agent: Optional[str],
+    country: Optional[str],
+) -> "Op[LoginSession]":
+    """Only the fields the caller set are sent."""
+    return _Op(
+        "POST",
+        "fetchyr/login-sessions",
+        compact(
+            {
+                "target_url": target_url,
+                "method": method,
+                "cookies": cookies,
+                "user_agent": user_agent,
+                "country": country,
+            }
+        ),
+        parse=_login_session(target_url),
+    )
+
+
+def _get_session(artifact_id: str) -> "Op[SessionStatus]":
+    return _Op(
+        "GET",
+        f"fetchyr/sessions/{seg(artifact_id)}",
+        parse=_session_status(artifact_id),
+    )
+
+
+def _resume_session(artifact_id: str) -> "Op[SessionStatus]":
+    return _Op(
+        "POST",
+        f"fetchyr/sessions/{seg(artifact_id)}/resume",
+        {},
+        parse=_session_status(artifact_id),
+    )
+
+
 def _url_body(url: str, session_artifact_id: Optional[str]) -> Dict[str, Any]:
     return compact({"url": url, "session_artifact_id": session_artifact_id})
 
@@ -283,6 +382,68 @@ class FetchyrNamespace:
     def terminate_session(self, artifact_id: str) -> None:
         """Alias of invalidate_session."""
         self.invalidate_session(artifact_id)
+
+    def start_login_session(
+        self,
+        target_url: str,
+        method: Optional[str] = None,
+        cookies: Optional[List[Dict[str, Any]]] = None,
+        user_agent: Optional[str] = None,
+        country: Optional[str] = None,
+    ) -> LoginSession:
+        """Make a session from your own account, for a site that needs a
+        login (a fetch, crawl or extract answered ``auth_required``).
+
+        Two methods:
+
+        * ``"interactive"`` (the API's default when ``method`` is not
+          given): the API starts the site's login in a browser. The result
+          has ``status == "waiting_for_login"`` and a ``discovery_id``;
+          poll ``get_auth_chain_status(discovery_id)`` and answer with
+          ``resume_auth_chain_credentials`` and ``resume_auth_chain_mfa``
+          when it asks. The finished status names the session artifact id.
+        * ``"cookies"``: the cookies of a session in your own browser.
+          ``cookies`` and ``user_agent`` (that browser's
+          ``navigator.userAgent``) are both required; the API answers 422
+          without them, or when none of the cookies is the site's. The
+          result has ``status == "ready"`` and ``session_artifact_id``.
+
+        Pass the session artifact id as ``session_artifact_id`` to
+        ``evadr.fetch``, ``webgrph.crawl`` or ``kolektr.page``.
+
+        Args:
+            target_url: A page of the site that needs the login.
+            method: ``"interactive"`` or ``"cookies"``.
+            cookies: ``[{name, value, domain, path, expires,
+                expirationDate, secure, httpOnly, sameSite}, ...]`` as a
+                browser exports them (``name`` and ``value`` required).
+            user_agent: Your browser's user agent (method "cookies").
+            country: Two letters: the country the session's exit is in.
+
+        Only the arguments given are sent.
+        """
+        return run(
+            self._t,
+            _start_login_session(target_url, method, cookies, user_agent, country),
+        )
+
+    def get_session(self, artifact_id: str) -> SessionStatus:
+        """A login session's status: ``active``, ``paused`` (with
+        ``pause_reason`` and ``pause_message``), ``EXPIRED`` or
+        ``INVALIDATED``; what it presents; its use this hour. No cookie
+        value is returned."""
+        return run(self._t, _get_session(artifact_id))
+
+    def resume_session(self, artifact_id: str) -> SessionStatus:
+        """Lift a session's pause, after checking the account in your own
+        browser. Returns the session's status.
+
+        Raises:
+            ApiError: 409 when the session is not paused, or was paused
+                because the site signed it out (``pause_reason ==
+                "logged_out"``: log in again with ``start_login_session``).
+        """
+        return run(self._t, _resume_session(artifact_id))
 
     def create_workflow(
         self,
@@ -558,6 +719,28 @@ class AsyncFetchyrNamespace:
 
     async def terminate_session(self, artifact_id: str) -> None:
         await self.invalidate_session(artifact_id)
+
+    async def start_login_session(
+        self,
+        target_url: str,
+        method: Optional[str] = None,
+        cookies: Optional[List[Dict[str, Any]]] = None,
+        user_agent: Optional[str] = None,
+        country: Optional[str] = None,
+    ) -> LoginSession:
+        """Async equivalent of FetchyrNamespace.start_login_session."""
+        return await arun(
+            self._t,
+            _start_login_session(target_url, method, cookies, user_agent, country),
+        )
+
+    async def get_session(self, artifact_id: str) -> SessionStatus:
+        """Async equivalent of FetchyrNamespace.get_session."""
+        return await arun(self._t, _get_session(artifact_id))
+
+    async def resume_session(self, artifact_id: str) -> SessionStatus:
+        """Async equivalent of FetchyrNamespace.resume_session."""
+        return await arun(self._t, _resume_session(artifact_id))
 
     async def create_workflow(
         self,

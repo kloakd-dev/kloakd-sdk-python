@@ -186,21 +186,25 @@ def test_pages_include_grouping_and_node_metadata(client: Kloakd) -> None:
     assert route.calls[1].request.url.params["cursor"] == "1"
     assert [n.is_grouping for n in nodes] == [True, False]
     assert nodes[1].parent_url == "https://s.test/"
-    assert nodes[1].crawl_parent_url is None  # the listing does not send it
+    assert not hasattr(nodes[1], "crawl_parent_url")  # the listing sends none
 
 
-def test_stored_page_dicts_carry_crawl_parent_url() -> None:
-    # modules/webgrph/module.py serialize_page: flat is_grouping / crawl_parent_url
+def test_a_node_reads_only_what_the_listing_sends() -> None:
+    # modules/webgrph/router.py HierarchyNodeResponse: title, is_grouping and
+    # the fetch outcome are under ``metadata``; flat copies are not read.
     from kloakd.modules.webgrph import _node
 
     node = _node({
-        "url": "https://s.test/b", "depth": 2, "title": "B",
+        "url": "https://s.test/b", "depth": 2, "title": "flat", "status_code": 200,
         "parent_url": "https://s.test/#path-catalogue",
-        "crawl_parent_url": "https://s.test/a", "is_grouping": False,
+        "children_urls": ["https://s.test/c"],
+        "crawl_parent_url": "https://s.test/a", "is_grouping": True,
+        "metadata": {"title": "B", "is_grouping": False},
     })
     assert node == PageNode(
-        url="https://s.test/b", depth=2, title="B", parent_url="https://s.test/#path-catalogue",
-        crawl_parent_url="https://s.test/a", is_grouping=False,
+        url="https://s.test/b", depth=2, title="B",
+        parent_url="https://s.test/#path-catalogue",
+        children=["https://s.test/c"], is_grouping=False,
     )
 
 

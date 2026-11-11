@@ -4,7 +4,7 @@
 [![Python](https://img.shields.io/pypi/pyversions/kloakd-sdk)](https://pypi.org/project/kloakd-sdk/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-The KLOAKD SDK gives Python developers typed access to all 7 KLOAKD modules. Modules compose like Unix pipes — the artifact output of one becomes the input to the next, eliminating redundant fetches.
+The KLOAKD SDK gives Python developers typed access to the KLOAKD API through seven namespaces: `evadr`, `webgrph`, `skanyr`, `nexus`, `parlyr`, `fetchyr` and `kolektr`. A call's artifact id can be passed to a later call, so a page fetched once is not fetched again.
 
 ## Installation
 
@@ -28,7 +28,7 @@ client = Kloakd(
 fetch = client.evadr.fetch("https://books.toscrape.com")
 print(f"Fetched via tier {fetch.tier_used}")
 
-# Step 2: Crawl the site hierarchy (waits until the crawl finishes)
+# Step 2: Crawl the site hierarchy (waits until the crawl ends or is held)
 crawl = client.webgrph.crawl("https://books.toscrape.com", max_depth=2)
 print(f"Found {crawl.total_pages} pages")
 
@@ -43,16 +43,16 @@ for book in data.records[:3]:
     print(book)
 ```
 
-## The 7 Modules
+## The seven namespaces
 
 | Namespace | Module | Purpose |
 |---|---|---|
-| `client.evadr` | Evadr | Anti-bot bypass (5-tier escalation) |
-| `client.webgrph` | Webgrph | Site mapping & BFS crawl |
+| `client.evadr` | Evadr | Fetch a page, analyse a site's protection, fetch jobs, proxies |
+| `client.webgrph` | Webgrph | Crawl a site and list its pages; crawl, extract and download in one job |
 | `client.skanyr` | Skanyr | Site knowledge store: sites, resources, search, history |
-| `client.nexus` | Nexus | 5-layer strategy engine |
+| `client.nexus` | Nexus | Analyse a page, synthesise and verify an extraction strategy (`analyze`, `synthesize`, `verify`, `reason`) |
 | `client.parlyr` | Parlyr | Conversational NLP → extraction intent |
-| `client.fetchyr` | Fetchyr | RPA, authentication, MFA, workflows |
+| `client.fetchyr` | Fetchyr | Authentication, login sessions, MFA, forms, workflows |
 | `client.kolektr` | Kolektr | Structured data extraction |
 
 ## Artifact Chaining
@@ -157,10 +157,13 @@ timing out first.
 
 **Work slots:** every metered call (a fetch, an extraction, a crawl start,
 ...) holds one of the organisation's work slots while it runs; crawls and
-batches hold theirs until they end. Free runs 2 at once, Starter 5, Pro 10,
-Pro+ 20, Developer 50, Enterprise 100. Over the limit the API answers 409
-`concurrent_limit` and the SDK raises `ConcurrencyLimitError`; it is not
-retried, so wait for one of your calls to finish and try again:
+batches hold theirs until they end. Free runs 10 at once, Starter 5, Pro 10,
+Pro+ 20, Developer 50, Enterprise 100 (the anonymous test keys of the docs
+run 2). A call over the limit is queued by the API: one that can continue
+as a job (the calls listed under *Long requests*) waits for a slot as a
+job; any other waits up to 10 seconds and is then answered 409
+`concurrent_limit`, which the SDK raises as `ConcurrencyLimitError`. It is
+not retried, so wait for one of your calls to finish and try again:
 
 ```python
 from kloakd import ConcurrencyLimitError
@@ -175,7 +178,9 @@ except ConcurrencyLimitError as e:
 
 ```python
 crawl = client.webgrph.crawl("https://example.com")   # waits, then loads every page
-if not crawl.ok:
+if crawl.held:
+    print(crawl.message)          # paused for quota; see "Held crawls"
+elif not crawl.ok:
     print(crawl.status, crawl.error)
 all_pages = crawl.pages
 page = client.webgrph.get_crawl_pages(crawl.crawl_id, limit=100)   # one page, by cursor (limit 1-1000)
@@ -194,12 +199,64 @@ hits = client.skanyr.search("pricing", site_id=stored["site_id"])
 zip_bytes = client.skanyr.export_site(stored["site_id"])   # a ZIP archive
 ```
 
+`max_depth` and `max_pages` are sent only when you give them; left out, the
+API uses your plan's default (up to 0.6.0 the SDK sent 3 and 100).
+
 Pages: only fetched pages are listed, each under the page the crawl found
 it on, and `total_pages` / `max_depth_reached` count fetched pages only.
 `include_grouping=True` also lists the tree's grouping folders, which were
 never fetched (`PageNode.is_grouping`). `limit` is 1-1000 and a cursor is
 the `next_cursor` string of the previous page; anything else raises
-`ValueError` before the request (the API would answer 422).
+`ValueError` before the request (the API would answer 422). A node carries
+`fetch_status` (`fetched`, `unfetched` or `not_requested`) and
+`fetch_error` when the API sends them. It has no HTTP status code: the
+`status_code` and `crawl_parent_url` attributes of 0.6.0 were always None
+and are gone.
+
+### Held crawls
+
+When the organisation's quota runs out, a crawl is paused, not failed: its
+status is `held_quota`. It keeps its id and resumes by itself when quota
+returns (an upgrade, a top-up or a new billing period); a crawl held for 30
+days ends `failed` with `error_code == "held_quota_expired"`.
+
+`webgrph.crawl`, `webgrph.wait_for_crawl` and `client.crawl` return a held
+crawl; they do not raise and do not poll it to the timeout:
+
+```python
+crawl = client.webgrph.crawl("https://example.com")
+if crawl.held:                      # status == "held_quota"
+    print(crawl.message)            # the API's text; crawl.error is None
+    # later, with the same id:
+    crawl = client.webgrph.wait_for_crawl(crawl.crawl_id, url="https://example.com")
+```
+
+A held crawl has `success` False, `error` None and no pages.
+`webgrph.crawl_all` returns an empty list for it (as for a failed crawl),
+and `webgrph.crawl_stream` ends. `client.crawl` reports it as
+`site.held`, `site.crawl_status`, `site.crawl_id` and `site.message`.
+`wait_for_crawl(crawl_id)` waits for any crawl by its id: one started with
+`crawl(..., wait=False)`, a held one, or one you continued.
+
+### Partial crawls and `continue_crawl`
+
+A crawl that stopped before it fetched everything still ends `completed`.
+The result says what it did:
+
+```python
+crawl = client.webgrph.crawl("https://example.com")
+print(crawl.is_partial, crawl.partial_reason)
+print(crawl.pages_discovered, crawl.pages_fetched, crawl.pages_unfetched)
+if crawl.resumable:                 # it stopped at its time budget
+    client.webgrph.continue_crawl(crawl.crawl_id)      # queued again, same id
+    crawl = client.webgrph.wait_for_crawl(crawl.crawl_id)
+```
+
+`continue_crawl` puts the crawl back in the queue to fetch the pages it
+left, with a new time budget; pages already fetched are not fetched again.
+The API answers 409 (`ApiError`) for a crawl that did not stop at its time
+budget (an unknown id included), has not ended, or is already being
+continued. Each of these fields is None when the API did not send it.
 
 Extraction schemas are the shorthand `{"field": "css:selector"}` (the
 `css:` prefix is optional; a value may also be
@@ -242,8 +299,8 @@ invalid CSS selector is refused by the API with 422 (`ApiError`).
 ## Crawl, extract and download
 
 One job crawls a site, extracts every page and keeps the rows for download
-(unreleased; after 0.6.0). The plan must include Kolektr, and a test key is
-refused (403).
+(new after 0.6.0). The plan must include Kolektr, and a test key is refused
+(403).
 
 ```python
 job = client.webgrph.start_crawl_extract(
@@ -267,7 +324,7 @@ failed = client.webgrph.get_crawl_extract_pages(job.job_id, status="failed")
 
 # Download: json, ndjson or csv, streamed to a file ...
 saved = client.webgrph.download_crawl_extract(job.job_id, "rows.csv", format="csv")
-print(saved.path, saved.bytes, saved.job_status)
+print(saved.path, saved.bytes, saved.job_status, saved.crawl)
 # ... or as a stream
 with client.webgrph.export_crawl_extract(job.job_id, format="ndjson") as export:
     for chunk in export.iter_bytes():
@@ -281,9 +338,33 @@ names) or `schema` (`item_selector` and `fields` of `{name, selector,
 attribute, type}`); without it the API chooses what to extract.
 `wait_for_crawl_extract` polls every `poll_interval` seconds (default 3) for
 at most `poll_timeout` (default 3600) and raises `JobTimeoutError` while the
-job still runs; a cancelled job is returned, not raised. An export of a job
-that has not completed holds the rows stored so far (`job_status`). The CSV
-starts with a UTF-8 byte order mark. A refused download leaves no file.
+job still runs; a cancelled job is returned, not raised. A job whose crawl
+is held for quota is returned at once too, with `status.held` True and
+`status.finished` False (see *Held crawls*); wait for it again later.
+`status.crawl` says what the job's crawl did (`status`, `is_partial`,
+`partial_reason`, `pages_discovered`, `pages_fetched`, `pages_unfetched`,
+`cancelled`, `root_unfetched`, `error`, `error_code`); it is None until the
+API sends it. The CSV starts with a UTF-8 byte order mark. A refused
+download leaves no file.
+
+### What an export says about its job
+
+An export (`export_crawl_extract`) and a saved file
+(`download_crawl_extract`) carry two things read from the response headers:
+
+- `job_status` (`X-Job-Status`): the job's status when the export began. A
+  value other than `completed` means the file holds the rows stored so far.
+- `crawl` (the `X-Crawl-*` headers): `status`, `is_partial`,
+  `partial_reason`, `pages_discovered`, `pages_fetched`, `pages_unfetched`,
+  `cancelled`, `root_unfetched`. A value whose header was not sent is None;
+  `crawl` itself is None when the response has no `X-Crawl-*` header.
+
+```python
+with client.webgrph.export_crawl_extract(job.job_id, format="csv") as export:
+    if export.crawl and export.crawl.is_partial:
+        print("partial crawl:", export.crawl.partial_reason,
+              export.crawl.pages_unfetched, "pages not fetched")
+```
 
 A batch job's results download the same way:
 
@@ -292,6 +373,8 @@ client.download_batch_job(batch_job_id, "batch.ndjson", format="ndjson")
 with client.export_batch_job(batch_job_id, format="csv") as export:
     data = export.read()
 ```
+
+A batch export sends neither header: its `job_status` and `crawl` are None.
 
 The async client has the same methods: `await` the calls, `async for` over
 `iter_crawl_extract_results`, and
@@ -329,6 +412,42 @@ if mfa.mfa_detected:
 forms  = client.fetchyr.detect_forms("https://example.com/signup")
 seen   = client.fetchyr.check_duplicate("https://example.com/item/1")
 ```
+
+### Login sessions: your own account
+
+When a fetch, crawl or extraction answers `auth_required`, make a session
+from your own account and pass its id as `session_artifact_id`.
+
+```python
+# From the cookies of a session in your own browser. cookies and user_agent
+# (that browser's navigator.userAgent) are both required for this method.
+login = client.fetchyr.start_login_session(
+    "https://acme.example/account",
+    method="cookies",
+    cookies=[{"name": "sid", "value": "...", "domain": "acme.example"}],
+    user_agent="Mozilla/5.0 ...",
+)
+print(login.status, login.cookies_kept, login.cookies_dropped)   # "ready"
+page = client.evadr.fetch("https://acme.example/account",
+                          session_artifact_id=login.session_artifact_id)
+
+# Or let the API open the site's login (the default method, "interactive")
+login = client.fetchyr.start_login_session("https://acme.example/account")
+print(login.status, login.discovery_id)        # "waiting_for_login"
+state = client.fetchyr.get_auth_chain_status(login.discovery_id)
+
+# A session's status, and lifting a pause
+status = client.fetchyr.get_session(login.session_artifact_id)
+print(status.status, status.pause_reason, status.requests_this_hour)
+if status.status == "paused" and status.pause_reason != "logged_out":
+    status = client.fetchyr.resume_session(status.artifact_id)
+```
+
+Only the arguments you give are sent. The API answers 422 (`ApiError`) for
+method `"cookies"` without cookies or without a user agent, or when none of
+the cookies is the site's. `get_session` returns no cookie value.
+`resume_session` raises `ApiError` (409) when the session is not paused or
+was paused because the site signed it out; log in again then.
 
 ## Links
 

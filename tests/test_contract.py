@@ -1,8 +1,8 @@
 """Every request the SDK makes is a live API route (method and path).
 
-tests/fixtures/routes.tsv is the backend's route list (METHOD\\tPATH,
-generated from kobe-scraper 4fb33ea4 with the module routers mounted as
-kernel/bootstrap.py does). Each public method of each namespace, sync and
+tests/fixtures/routes.tsv is the backend's route list (METHOD\\tPATH, 292
+rows, generated from kobe-scraper main 6bd19e9b with the module routers
+mounted as kernel/bootstrap.py does). Each public method of each namespace, sync and
 async, is called with placeholder arguments against a recording mock.
 
 0.4.0 edits to the list, from kobe-scraper's code: the 13
@@ -14,11 +14,15 @@ and ``error-summary`` and ``evadr/profiles`` are deleted (kobe-scraper
 d7d25134, invented results too); the hand-off poll
 ``GET …/handoff/{job_id}`` (``kernel/sync_handoff.py``) is added.
 
-After 0.6.0, from kobe-scraper integration/2026-11-12 (e5e358aa), edited by
-hand: ``POST nexus/execute`` is deleted (modules/nexus/router.py); the six
-``webgrph/crawl-extract`` routes (modules/webgrph/crawl_extract_router.py)
-and ``GET batch-jobs/{batch_job_id}/export`` (kernel/batch_export_router.py)
-are added.
+After 0.6.0 the list was regenerated from kobe-scraper main 6bd19e9b (it
+was generated from 4fb33ea4 and then edited by hand). Against the 0.6.0
+list: ``POST nexus/execute`` is deleted (modules/nexus/router.py); the six
+``webgrph/crawl-extract`` routes (modules/webgrph/crawl_extract_router.py),
+``GET batch-jobs/{batch_job_id}/export`` (kernel/batch_export_router.py),
+``POST webgrph/crawl/{crawl_id}/continue`` (modules/webgrph/router.py),
+``POST fetchyr/login-sessions`` and ``GET fetchyr/sessions/{artifact_id}``
+with its ``/resume`` (modules/fetchyr/router.py) are added; the five
+remaining ``webgrph/analytics/*`` routes are gone.
 """
 
 from __future__ import annotations
@@ -181,10 +185,14 @@ DELETED = [
     ("GET", "webgrph/analytics/job-trends"),
     ("GET", "webgrph/analytics/error-summary"),
     ("GET", "evadr/profiles"),
+    *[("GET", f"webgrph/analytics/{p}") for p in [
+        "content/discovery-patterns", "dashboard/summary",
+        "scraping/efficiency-metrics", "site-maps/trends", "users/behavior-insights",
+    ]],
 ]
-# The webgrph analytics sub-router serves the dashboard and is not part of
-# the public API (kobe-scraper scripts/generate_public_openapi.py EXCLUDED);
-# its routes exist but the SDK does not call them.
+# The webgrph analytics sub-router served the dashboard and was never part
+# of the public API. None of its routes is in the route list any more; the
+# SDK must not call that path.
 DASHBOARD_ONLY = re.compile(r"/webgrph/analytics/")
 
 
@@ -197,7 +205,7 @@ def _handoff_responder(request: Any) -> Response:
 
 
 def test_the_deleted_routes_are_not_in_the_route_list() -> None:
-    assert len(DELETED) == 27
+    assert len(DELETED) == 32
     assert not _live("POST", f"{ORG_PREFIX}/nexus/execute")
     assert [(m, p) for m, p in DELETED if _live(m, f"{ORG_PREFIX}/{p}")] == []
     assert _live("GET", f"{ORG_PREFIX}/handoff/h-1")
@@ -275,3 +283,43 @@ def test_the_deleted_methods_are_gone() -> None:
     assert not hasattr(client.evadr, "list_profiles")
     assert hasattr(client.evadr, "list_vendors")
     assert hasattr(client.kolektr, "get_job")
+
+
+# The methods added after 0.6.0 and the one request each makes.
+NEW_METHODS = [
+    ("webgrph", "continue_crawl", ("c-1",), "POST", "webgrph/crawl/c-1/continue"),
+    ("webgrph", "wait_for_crawl", ("c-1",), "GET", "webgrph/crawl/c-1"),
+    (
+        "fetchyr", "start_login_session", ("https://s.test",),
+        "POST", "fetchyr/login-sessions",
+    ),
+    ("fetchyr", "get_session", ("a-1",), "GET", "fetchyr/sessions/a-1"),
+    ("fetchyr", "resume_session", ("a-1",), "POST", "fetchyr/sessions/a-1/resume"),
+    ("skanyr", "get_extraction_text", ("h-1",), "GET", "skanyr/extractions/h-1/text"),
+]
+# A crawl status that ends the waiter without a pages request.
+HELD = {"crawl_id": "c-1", "status": "held_quota", "message": "held"}
+
+
+def test_the_new_methods_call_live_routes() -> None:
+    client = Kloakd(api_key="k", organization_id=TEST_ORG_ID, base_url=TEST_BASE_URL)
+    with respx.mock(assert_all_called=False) as router:
+        router.route().mock(return_value=Response(200, json=HELD))
+        for ns, name, args, method, path in NEW_METHODS:
+            before = len(router.calls)
+            getattr(getattr(client, ns), name)(*args)
+            assert _recorded(router)[before:] == [(method, f"{ORG_PREFIX}/{path}")]
+            assert _live(method, f"{ORG_PREFIX}/{path}"), (ns, name)
+
+
+async def test_the_new_async_methods_call_live_routes() -> None:
+    client = AsyncKloakd(
+        api_key="k", organization_id=TEST_ORG_ID, base_url=TEST_BASE_URL
+    )
+    with respx.mock(assert_all_called=False) as router:
+        router.route().mock(return_value=Response(200, json=HELD))
+        for ns, name, args, method, path in NEW_METHODS:
+            before = len(router.calls)
+            await getattr(getattr(client, ns), name)(*args)
+            assert _recorded(router)[before:] == [(method, f"{ORG_PREFIX}/{path}")]
+            assert _live(method, f"{ORG_PREFIX}/{path}"), (ns, name)

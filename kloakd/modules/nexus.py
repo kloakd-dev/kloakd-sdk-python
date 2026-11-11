@@ -55,7 +55,6 @@ def _analysis(url: str) -> Callable[[Dict[str, Any]], NexusAnalyzeResult]:
             page_type=raw.get("page_type") or "unknown",
             confidence=float(raw.get("confidence") or 0.0),
             artifact_id=_artifact_id(raw),
-            error=raw.get("error"),
         )
 
     return parse
@@ -73,7 +72,6 @@ def _synthesis(url: str, goal: str) -> Callable[[Dict[str, Any]], NexusSynthesis
             steps=raw.get("steps") or [],
             confidence=float(raw.get("confidence") or 0.0),
             synthesis_time_ms=int(raw.get("synthesis_time_ms") or 0),
-            error=raw.get("error"),
         )
 
     return parse
@@ -86,7 +84,6 @@ def _verification(strategy_id: str) -> Callable[[Dict[str, Any]], NexusVerifyRes
             verified=bool(raw.get("verified", False)),
             safety_score=float(raw.get("safety_score") or 0.0),
             violations=raw.get("violations") or [],
-            error=raw.get("error"),
             status=raw.get("status"),
             risk_score=float(raw.get("risk_score") or 0.0),
             safety_checks=[
@@ -156,7 +153,7 @@ class NexusNamespace:
         query_type: str,
         parameters: Optional[List[str]] = None,
         perception_id: Optional[str] = None,
-        timeout_secs: Optional[int] = None,
+        timeout_secs: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Run a reasoning query (``query_type`` is required by the API;
         ``parameters`` is a list of strings, modules/nexus/router.py ReasonRequest)."""
@@ -228,7 +225,7 @@ class AsyncNexusNamespace:
         query_type: str,
         parameters: Optional[List[str]] = None,
         perception_id: Optional[str] = None,
-        timeout_secs: Optional[int] = None,
+        timeout_secs: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Run a reasoning query (``query_type`` is required by the API;
         ``parameters`` is a list of strings, modules/nexus/router.py ReasonRequest)."""

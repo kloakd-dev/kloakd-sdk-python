@@ -2,9 +2,13 @@
 
 ## Changed after 0.6.0
 
-Checked against kobe-scraper integration/2026-11-12 (e5e358aa). The route
-list in `tests/fixtures/routes.tsv` was edited to match (one row removed,
-seven added), not regenerated.
+Checked against kobe-scraper 6bd19e9b (main, 12 November 2026). The route
+list in `tests/fixtures/routes.tsv` was generated again from that commit
+(292 rows: every route of `kobe_scraper.api.app` with the module routers,
+the crawl-extract router and the playground and free-tier routers mounted
+as `kernel/bootstrap.py` does). `tests/test_contract.py` calls every public
+method of the sync and the async client and fails on any request that is
+not in the list.
 
 | Method | Path | After 0.6.0 |
 |---|---|---|
@@ -17,7 +21,37 @@ seven added), not regenerated.
 | GET | webgrph/crawl-extract/{job_id}/pages | `get_crawl_extract_pages`: `limit`, `offset`, `status` |
 | GET | webgrph/crawl-extract/{job_id}/export | `export_crawl_extract`, `download_crawl_extract`: `format` (json, ndjson, csv), `shape`, `page_type`, `kind`; streamed |
 | POST | webgrph/crawl-extract/{job_id}/cancel | `cancel_crawl_extract` |
-| GET | batch-jobs/{batch_job_id}/export | `client.export_batch_job`, `download_batch_job`: `format`; streamed (`kernel/batch_export_router.py`) |
+| GET | webgrph/crawl-extract/{job_id} | also read for `crawl` (what the job's crawl did; `modules/webgrph/crawl_extract.py` crawl_truth). `wait_for_crawl_extract` and `crawl_extract` return a job whose `crawl.status` is `held_quota` (`held`) |
+| GET | webgrph/crawl-extract/{job_id}/export | also read for the `X-Crawl-*` headers (`ExportDownload.crawl`, `SavedExport.crawl`; `crawl_extract_router.py` _crawl_headers) |
+| GET | batch-jobs/{batch_job_id}/export | `client.export_batch_job`, `download_batch_job`: `format`; streamed (`kernel/batch_export_router.py`). Sends no `X-Job-Status` and no `X-Crawl-*` header: `job_status` and `crawl` are None |
+| POST | webgrph/crawl/{crawl_id}/continue | new: `webgrph.continue_crawl` (202 `{success, crawl_id, status}`; 409 when the crawl cannot be continued; `modules/webgrph/router.py`) |
+| GET | webgrph/crawl/{crawl_id} | also called by the new `webgrph.wait_for_crawl`. Read for `is_partial`, `partial_reason`, `resumable`, `pages_discovered`, `pages_fetched`, `pages_unfetched`, `error_code`, `message` as well (CrawlStatusResponse). Status `held_quota` ends the wait (`CrawlResult.held`) and is not an error |
+| POST | webgrph/crawl | `max_depth` and `max_pages` sent only when given (CrawlRequest: the plan's default applies) |
+| GET | webgrph/crawl/{crawl_id}/pages | nodes read for `metadata.fetch_status` and `metadata.fetch_error`; `PageNode.status_code` and `crawl_parent_url` removed (the listing sends neither) |
+| POST | fetchyr/login-sessions | new: `fetchyr.start_login_session` (`{target_url, method?, cookies?, user_agent?, country?}`; 201 for cookies, 202 for interactive; `modules/fetchyr/router.py`) |
+| GET | fetchyr/sessions/{artifact_id} | new: `fetchyr.get_session` (SessionStatusResponse). The 0.3.0 table below says this route was removed; it is live again, with a different answer |
+| POST | fetchyr/sessions/{artifact_id}/resume | new: `fetchyr.resume_session` (409 when not paused or signed out) |
+| GET | skanyr/extractions/{hash}/text | the text/plain body is returned as it is (it was parsed as JSON first: a body such as `123` or `{"a": 1}` did not come back as text) |
+| POST | kolektr/extract | response read for `level`, `level_reason`, `login_options`; `has_more` and `total` are no longer read (ExtractResponse has neither) |
+| POST | nexus/analyze, synthesize, verify | `error` is no longer read (no answer has it) |
+| POST | nexus/reason | `timeout_secs` may be a fraction (ReasonRequest: float) |
+
+## Routes in the list the SDK does not call (6bd19e9b)
+
+Under the seven namespaces, three: `GET skanyr/resources/{id}/download`
+(binary body), `GET parlyr/chat/{id}/events`, and `POST nexus/knowledge`
+(left out of the public API reference).
+
+Outside the namespaces the SDK calls `GET handoff/{job_id}` and
+`GET batch-jobs/{batch_job_id}/export` only. Not covered: the other
+`batch-jobs` routes (create, list, read, results, stream, pause, resume,
+cancel) and `batch/*`, `jobs`, `results`, `webhooks` (deliveries, retry and
+rotate-secret included), `activity`, `scrapers`, `scraping`, `screenshots`,
+`pipeline`, `analysis`, `analytics`, `performance`, `monitoring`,
+`integrations`, `workspaces`, `users`, `members`, and everything outside
+`/api/v1/organizations/{organization_id}/` (auth, billing, free, playground,
+ops, system, health, invitations). The five `webgrph/analytics/*` routes
+that earlier lists carried are not in the API any more.
 
 # Routes the SDK called in 0.6.0
 
@@ -79,16 +113,17 @@ added), not regenerated.
 | GET | kolektr/progress/phases[/{name}[/steps]], progress/summary | removed (`list_progress_phases`, `get_progress_phase`, `get_progress_phase_steps`, `get_progress_summary`) |
 | GET | kolektr/pipeline/{id}/stream, /events | removed (`get_pipeline_stream`, `get_pipeline_events`) |
 | GET | webgrph/analytics/job-trends, error-summary | removed (`get_job_trends`, `get_error_summary`) |
-| GET | webgrph/analytics/... (the other five) | not called: the dashboard's sub-router, not part of the public API (`get_dashboard_summary`, `get_discovery_patterns`, `get_efficiency_metrics`, `get_site_mapping_trends`, `get_user_behavior_insights` removed) |
+| GET | webgrph/analytics/... (the other five; gone from the API at 6bd19e9b) | not called: the dashboard's sub-router, not part of the public API (`get_dashboard_summary`, `get_discovery_patterns`, `get_efficiency_metrics`, `get_site_mapping_trends`, `get_user_behavior_insights` removed) |
 | GET | evadr/profiles | removed (`list_profiles`). GET evadr/vendors stays |
 | * | recommendations/... (standalone router) | dropped from the route list: not mounted (`api/app.py`, GAP-SEC-6) |
 | POST | nexus/execute | response read for `execution_result_id` |
 
 # Routes the SDK called in 0.3.0
 
-Checked against the API's route list (`tests/fixtures/routes.tsv`, generated
-from kobe-scraper 4fb33ea4 with the module routers mounted as
-`kernel/bootstrap.py` does). `tests/test_contract.py` calls every public
+Checked against the API's route list (`tests/fixtures/routes.tsv`, at 0.3.0
+generated from kobe-scraper 4fb33ea4 with the module routers mounted as
+`kernel/bootstrap.py` does; the list in the repository now is the one
+generated from 6bd19e9b, see the top). `tests/test_contract.py` calls every public
 method of the sync and the async client and fails on any request that is not a live route.
 
 All paths are under `/api/v1/organizations/{organization_id}/`.
@@ -108,7 +143,7 @@ All paths are under `/api/v1/organizations/{organization_id}/`.
 | POST/DELETE | evadr/proxies[/{name}] | live | unchanged |
 | POST | fetchyr/login | wrong path and fields | `authenticate(credential_name, target_url)` → POST fetchyr/authenticate |
 | POST | fetchyr/fetch | removed | use `evadr.fetch(url, {session_artifact_id})` |
-| GET | fetchyr/sessions/{id} | removed | `get_session` dropped (list and delete remain) |
+| GET | fetchyr/sessions/{id} | removed | `get_session` dropped (list and delete remain). Live again at 6bd19e9b for login sessions: `get_session` is back, see the top |
 | DELETE | fetchyr/sessions/{id} | live | unchanged |
 | POST | fetchyr/workflows | wrong fields (`url`) | `{name, steps, description?, workflow_type?}`; reads `id` |
 | POST | fetchyr/workflows/{id}/execute | wrong fields (empty body) | `{target_url, session_artifact_id?, input_data?}` |
@@ -164,5 +199,7 @@ and logs keep it; streams now send it in the `Authorization` header.
 APIs, resources, search, findings, technologies, snapshots, timeline, diff,
 graph, extraction text and structure.
 
-Not covered: `GET skanyr/resources/{id}/download` (binary body) and
-`GET parlyr/chat/{id}/events`.
+Not covered at 0.3.0: `GET skanyr/resources/{id}/download` (binary body) and
+`GET parlyr/chat/{id}/events`. The list for the current code, with the
+crawl continue and login-session routes now called, is at the top ("Routes
+in the list the SDK does not call").

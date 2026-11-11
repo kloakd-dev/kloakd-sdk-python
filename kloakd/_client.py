@@ -102,6 +102,10 @@ def _site_result(
         pages=pages,
         crawl_artifact_id=crawl.artifact_id,
         error=crawl.error,
+        crawl_id=crawl.crawl_id,
+        crawl_status=crawl.status,
+        held=crawl.held,
+        message=crawl.message,
     )
 
 
@@ -183,8 +187,8 @@ class Kloakd:
     def crawl(
         self,
         url: str,
-        max_depth: int = 3,
-        max_pages: int = 100,
+        max_depth: Optional[int] = None,
+        max_pages: Optional[int] = None,
         extract_schema: Optional[ExtractSchema] = None,
         session_artifact_id: Optional[str] = None,
         include_external_links: bool = False,
@@ -207,10 +211,19 @@ class Kloakd:
         are the crawl's own (False, with the reason, when the crawl failed
         or was still running after ``poll_timeout``).
 
+        A crawl held for quota is not an error and is not raised: the result
+        has ``held`` True, ``success`` False, ``error`` None, ``message``
+        the server's text and no pages. The crawl resumes by itself on the
+        same id when the organization's quota returns (after 30 days held
+        it ends failed with ``held_quota_expired``); wait for it later with
+        ``client.webgrph.wait_for_crawl(result.crawl_id)``.
+
         Args:
             url: Root URL to crawl.
-            max_depth: Maximum BFS depth. Default 3.
-            max_pages: Maximum pages to crawl. Default 100.
+            max_depth: Maximum BFS depth. Sent only when given; left out,
+                the API uses the plan's default.
+            max_pages: Maximum pages to crawl. Sent only when given; left
+                out, the API uses the plan's default.
             extract_schema: Per-page extraction schema, as for
                 ``kolektr.page``: the ``{field: "css:selector"}`` shorthand,
                 a list of fields, or a full schema_spec.
@@ -251,8 +264,8 @@ class Kloakd:
     def crawl_stream(
         self,
         url: str,
-        max_depth: int = 3,
-        max_pages: int = 100,
+        max_depth: Optional[int] = None,
+        max_pages: Optional[int] = None,
         extract_schema: Optional[ExtractSchema] = None,
         session_artifact_id: Optional[str] = None,
         include_external_links: bool = False,
@@ -265,8 +278,9 @@ class Kloakd:
         Same as ``crawl()`` but yields events in real-time instead of
         returning a single result. Event types:
         - ``discovery_started`` — crawl discovery started (emitted by the SDK)
-        - ``discovery_complete`` — the crawl finished (``success``/``error``
-          are the crawl's own)
+        - ``discovery_complete`` — the crawl ended, or is held for quota
+          (``success``/``error`` are the crawl's own; ``metadata`` has
+          ``crawl_id``, ``status``, ``held`` and ``message``)
         - ``page_fetching`` — started fetching a page
         - ``page_fetched`` — page fetched successfully
         - ``page_failed`` — page fetch failed
@@ -299,7 +313,13 @@ class Kloakd:
             total=total,
             success=crawl_result.success,
             error=crawl_result.error,
-            metadata={"pages_found": total},
+            metadata={
+                "pages_found": total,
+                "crawl_id": crawl_result.crawl_id,
+                "status": crawl_result.status,
+                "held": crawl_result.held,
+                "message": crawl_result.message,
+            },
         )
 
         pages: List[CrawlPage] = []
@@ -494,8 +514,8 @@ class AsyncKloakd:
     async def crawl(
         self,
         url: str,
-        max_depth: int = 3,
-        max_pages: int = 100,
+        max_depth: Optional[int] = None,
+        max_pages: Optional[int] = None,
         extract_schema: Optional[ExtractSchema] = None,
         session_artifact_id: Optional[str] = None,
         include_external_links: bool = False,
@@ -533,8 +553,8 @@ class AsyncKloakd:
     async def crawl_stream(
         self,
         url: str,
-        max_depth: int = 3,
-        max_pages: int = 100,
+        max_depth: Optional[int] = None,
+        max_pages: Optional[int] = None,
         extract_schema: Optional[ExtractSchema] = None,
         session_artifact_id: Optional[str] = None,
         include_external_links: bool = False,
@@ -571,7 +591,13 @@ class AsyncKloakd:
             total=total,
             success=crawl_result.success,
             error=crawl_result.error,
-            metadata={"pages_found": total},
+            metadata={
+                "pages_found": total,
+                "crawl_id": crawl_result.crawl_id,
+                "status": crawl_result.status,
+                "held": crawl_result.held,
+                "message": crawl_result.message,
+            },
         )
 
         pages: List[CrawlPage] = []

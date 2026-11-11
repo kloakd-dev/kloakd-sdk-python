@@ -26,10 +26,6 @@ if TYPE_CHECKING:
     from kloakd._http import _AsyncHttpTransport, _HttpTransport
 
 
-def _text(raw: Any) -> str:
-    return raw if isinstance(raw, str) else ""
-
-
 class SkanyrNamespace:
     """Synchronous Skanyr operations. Access via ``client.skanyr``."""
 
@@ -340,8 +336,12 @@ class SkanyrNamespace:
         )
 
     def get_extraction_text(self, content_hash: str) -> str:
-        """The extracted plain text (the API answers text/plain)."""
-        return run(self._t, _Op("GET", f"skanyr/extractions/{seg(content_hash)}/text", parse=_text))
+        """The extracted plain text, as the API sent it (``text/plain``).
+        The body is never parsed as JSON, so text that happens to be valid
+        JSON (``123``, ``{"a": 1}``) comes back as that text."""
+        return self._t.request_text(
+            "GET", f"skanyr/extractions/{seg(content_hash)}/text"
+        )
 
     def get_extraction_structure(self, content_hash: str) -> Dict[str, Any]:
         return run(self._t, _Op("GET", f"skanyr/extractions/{seg(content_hash)}/structure"))
@@ -663,9 +663,9 @@ class AsyncSkanyrNamespace:
         )
 
     async def get_extraction_text(self, content_hash: str) -> str:
-        """The extracted plain text (the API answers text/plain)."""
-        return await arun(
-            self._t, _Op("GET", f"skanyr/extractions/{seg(content_hash)}/text", parse=_text)
+        """Async equivalent of SkanyrNamespace.get_extraction_text."""
+        return await self._t.request_text(
+            "GET", f"skanyr/extractions/{seg(content_hash)}/text"
         )
 
     async def get_extraction_structure(self, content_hash: str) -> Dict[str, Any]:
