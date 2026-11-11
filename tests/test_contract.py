@@ -13,12 +13,19 @@ progress, progress-phase and pipeline routes, ``webgrph/analytics/job-trends``
 and ``error-summary`` and ``evadr/profiles`` are deleted (kobe-scraper
 d7d25134, invented results too); the hand-off poll
 ``GET …/handoff/{job_id}`` (``kernel/sync_handoff.py``) is added.
+
+After 0.6.0, from kobe-scraper integration/2026-11-12 (e5e358aa), edited by
+hand: ``POST nexus/execute`` is deleted (modules/nexus/router.py); the six
+``webgrph/crawl-extract`` routes (modules/webgrph/crawl_extract_router.py)
+and ``GET batch-jobs/{batch_job_id}/export`` (kernel/batch_export_router.py)
+are added.
 """
 
 from __future__ import annotations
 
 import inspect
 import re
+import tempfile
 from pathlib import Path
 from typing import Any, List, Tuple
 
@@ -65,6 +72,8 @@ def _args(fn: Any) -> List[Any]:
             out.append([{"a": 1}])
         elif name in ("body", "data", "form_data", "metadata", "credentials"):
             out.append({"a": "b"})
+        elif name == "path":  # a download's file
+            out.append(str(Path(tempfile.mkdtemp()) / "download"))
         else:
             out.append(f"{name}-1")
     return out
@@ -148,13 +157,12 @@ HANDOFF_ROUTES = {
     "fetchyr/mfa/detect",
     "nexus/analyze",
     "nexus/synthesize",
-    "nexus/execute",
 }
 # The methods expected to follow them (page_all goes through page).
 FOLLOWERS = {
     "evadr.fetch", "kolektr.page", "kolektr.page_all", "fetchyr.authenticate",
     "fetchyr.detect_forms", "fetchyr.fill_form", "fetchyr.detect_mfa",
-    "nexus.analyze", "nexus.synthesize", "nexus.execute",
+    "nexus.analyze", "nexus.synthesize",
 }
 DELETED = [
     ("POST", "kolektr/jobs"),
@@ -190,6 +198,7 @@ def _handoff_responder(request: Any) -> Response:
 
 def test_the_deleted_routes_are_not_in_the_route_list() -> None:
     assert len(DELETED) == 27
+    assert not _live("POST", f"{ORG_PREFIX}/nexus/execute")
     assert [(m, p) for m, p in DELETED if _live(m, f"{ORG_PREFIX}/{p}")] == []
     assert _live("GET", f"{ORG_PREFIX}/handoff/h-1")
     assert all(_live("POST", f"{ORG_PREFIX}/{p}") for p in HANDOFF_ROUTES)
@@ -252,6 +261,7 @@ def test_the_deleted_methods_are_gone() -> None:
             "create_preference", "get_preferences", "update_preference", "delete_preference",
             "get_recommendation_statistics"]
     assert [n for n in gone if hasattr(client.nexus, n)] == []
+    assert [n for n in ("execute", "knowledge") if hasattr(client.nexus, n)] == []
     assert not hasattr(client.kolektr, "create_job")
     kolektr_gone = ["get_job_progress", "get_job_progress_events", "get_job_progress_latest",
                     "get_job_progress_summary", "get_pipeline_events", "get_pipeline_stream",

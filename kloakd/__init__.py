@@ -24,7 +24,7 @@ Quickstart::
         print(record)
 
 Requests that run long (fetch, extract, the Fetchyr form and login calls,
-Nexus analyze/synthesize/execute) may be handed off by the API as a job
+Nexus analyze/synthesize) may be handed off by the API as a job
 (HTTP 202, after about 85 s); the SDK follows it and returns the same result.
 A request whose wait ran out raises JobTimeoutError; resume it with
 ``client.wait_for_handoff(e.job_id)``.
@@ -33,6 +33,7 @@ Documentation: https://docs.kloakd.dev/sdk/python
 """
 
 from kloakd._client import AsyncKloakd, Kloakd
+from kloakd._download import AsyncExportDownload, ExportDownload
 from kloakd.errors import (
     ApiError,
     AuthenticationError,
@@ -53,6 +54,13 @@ from kloakd.models import (
     ChatEvent,
     ChatTurn,
     CrawlEvent,
+    CrawlExtractCancelResult,
+    CrawlExtractJob,
+    CrawlExtractPage,
+    CrawlExtractPagesResult,
+    CrawlExtractResultsPage,
+    CrawlExtractRow,
+    CrawlExtractStatus,
     CrawlPage,
     CrawlProgressEvent,
     CrawlResult,
@@ -64,12 +72,12 @@ from kloakd.models import (
     MfaChallenge,
     MfaDetectionResult,
     NexusAnalyzeResult,
-    NexusExecuteResult,
-    NexusKnowledgeResult,
+    NexusSafetyCheck,
     NexusSynthesisResult,
     NexusVerifyResult,
     PageNode,
     ParseResult,
+    SavedExport,
     SchemaField,
     SchemaSpec,
     SessionResult,
@@ -106,6 +114,17 @@ __all__ = [
     "CrawlResult",
     "CrawlEvent",
     "PageNode",
+    "CrawlExtractJob",
+    "CrawlExtractStatus",
+    "CrawlExtractRow",
+    "CrawlExtractResultsPage",
+    "CrawlExtractPage",
+    "CrawlExtractPagesResult",
+    "CrawlExtractCancelResult",
+    # Exports (crawl-extract and batch jobs)
+    "ExportDownload",
+    "AsyncExportDownload",
+    "SavedExport",
     # Crawl orchestrator models
     "CrawlPage",
     "SiteCrawlResult",
@@ -114,8 +133,7 @@ __all__ = [
     "NexusAnalyzeResult",
     "NexusSynthesisResult",
     "NexusVerifyResult",
-    "NexusExecuteResult",
-    "NexusKnowledgeResult",
+    "NexusSafetyCheck",
     # Parlyr models
     "ParseResult",
     "ChatEvent",

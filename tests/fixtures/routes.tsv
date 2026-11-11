@@ -39,6 +39,7 @@ GET	/api/v1/organizations/{organization_id}/analytics/error-summary
 GET	/api/v1/organizations/{organization_id}/analytics/job-trends
 GET	/api/v1/organizations/{organization_id}/batch-jobs
 GET	/api/v1/organizations/{organization_id}/batch-jobs/{batch_job_id}
+GET	/api/v1/organizations/{organization_id}/batch-jobs/{batch_job_id}/export
 GET	/api/v1/organizations/{organization_id}/batch-jobs/{batch_job_id}/results
 GET	/api/v1/organizations/{organization_id}/batch-jobs/{batch_job_id}/stream
 GET	/api/v1/organizations/{organization_id}/evadr/jobs/{job_id}
@@ -139,6 +140,10 @@ GET	/api/v1/organizations/{organization_id}/webgrph/analytics/dashboard/summary
 GET	/api/v1/organizations/{organization_id}/webgrph/analytics/scraping/efficiency-metrics
 GET	/api/v1/organizations/{organization_id}/webgrph/analytics/site-maps/trends
 GET	/api/v1/organizations/{organization_id}/webgrph/analytics/users/behavior-insights
+GET	/api/v1/organizations/{organization_id}/webgrph/crawl-extract/{job_id}
+GET	/api/v1/organizations/{organization_id}/webgrph/crawl-extract/{job_id}/export
+GET	/api/v1/organizations/{organization_id}/webgrph/crawl-extract/{job_id}/pages
+GET	/api/v1/organizations/{organization_id}/webgrph/crawl-extract/{job_id}/results
 GET	/api/v1/organizations/{organization_id}/webgrph/crawl/{crawl_id}
 GET	/api/v1/organizations/{organization_id}/webgrph/crawl/{crawl_id}/events
 GET	/api/v1/organizations/{organization_id}/webgrph/crawl/{crawl_id}/pages
@@ -231,7 +236,6 @@ POST	/api/v1/organizations/{organization_id}/kolektr/extract/html
 POST	/api/v1/organizations/{organization_id}/kolektr/scrapers
 POST	/api/v1/organizations/{organization_id}/members
 POST	/api/v1/organizations/{organization_id}/nexus/analyze
-POST	/api/v1/organizations/{organization_id}/nexus/execute
 POST	/api/v1/organizations/{organization_id}/nexus/knowledge
 POST	/api/v1/organizations/{organization_id}/nexus/reason
 POST	/api/v1/organizations/{organization_id}/nexus/synthesize
@@ -251,6 +255,8 @@ POST	/api/v1/organizations/{organization_id}/users/
 POST	/api/v1/organizations/{organization_id}/users/authenticate
 POST	/api/v1/organizations/{organization_id}/users/{user_id}/unlock
 POST	/api/v1/organizations/{organization_id}/webgrph/crawl
+POST	/api/v1/organizations/{organization_id}/webgrph/crawl-extract
+POST	/api/v1/organizations/{organization_id}/webgrph/crawl-extract/{job_id}/cancel
 POST	/api/v1/organizations/{organization_id}/webgrph/crawl/{crawl_id}/cancel
 POST	/api/v1/organizations/{organization_id}/webgrph/reader-view
 POST	/api/v1/organizations/{organization_id}/webgrph/sessions

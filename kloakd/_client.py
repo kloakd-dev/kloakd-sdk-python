@@ -21,6 +21,13 @@ from __future__ import annotations
 
 from typing import Any, AsyncIterator, Dict, Iterator, List, Optional, Union
 
+from kloakd._download import (
+    AsyncExportDownload,
+    ExportDownload,
+    asave_export,
+    check_export_format,
+    save_export,
+)
 from kloakd._handoff import DEFAULT_POLL_INTERVAL, DEFAULT_POLL_TIMEOUT, PollOptions
 from kloakd._http import _AsyncHttpTransport, _HttpTransport
 from kloakd.errors import (
@@ -36,9 +43,10 @@ from kloakd.models import (
     CrawlProgressEvent,
     CrawlResult,
     FetchResult,
+    SavedExport,
     SiteCrawlResult,
 )
-from kloakd.modules._ops import as_dict
+from kloakd.modules._ops import as_dict, seg
 from kloakd.modules.evadr import AsyncEvadrNamespace, EvadrNamespace
 from kloakd.modules.fetchyr import AsyncFetchyrNamespace, FetchyrNamespace
 from kloakd.modules.kolektr import AsyncKolektrNamespace, KolektrNamespace
@@ -355,6 +363,27 @@ class Kloakd:
             PollOptions(poll_interval, timeout),
         )
 
+    def export_batch_job(
+        self, batch_job_id: str, format: str = "json"
+    ) -> ExportDownload:
+        """A batch job's results as a streamed file (``format``: json,
+        ndjson or csv; ``GET batch-jobs/{id}/export``, kobe-scraper
+        kernel/batch_export_router.py). Close the result, or use it as a
+        context manager. An unknown job raises ApiError 404; a ``format``
+        other than the three raises ValueError."""
+        response, client = self._transport.open_stream(
+            f"batch-jobs/{seg(batch_job_id)}/export",
+            {"format": check_export_format(format)},
+        )
+        return ExportDownload(response, client)
+
+    def download_batch_job(
+        self, batch_job_id: str, path: str, format: str = "json"
+    ) -> SavedExport:
+        """Write a batch job's results to the file ``path`` as they arrive.
+        The file is created once the API has answered 200."""
+        return save_export(self.export_batch_job(batch_job_id, format), path)
+
     def _crawl_page(
         self,
         url: str,
@@ -604,6 +633,25 @@ class AsyncKloakd:
             job_id,
             self._transport._handoff_url(job_id),
             PollOptions(poll_interval, timeout),
+        )
+
+    async def export_batch_job(
+        self, batch_job_id: str, format: str = "json"
+    ) -> AsyncExportDownload:
+        """Async equivalent of Kloakd.export_batch_job; close the result
+        with ``aclose`` or use it with ``async with``."""
+        response, client = await self._transport.open_stream(
+            f"batch-jobs/{seg(batch_job_id)}/export",
+            {"format": check_export_format(format)},
+        )
+        return AsyncExportDownload(response, client)
+
+    async def download_batch_job(
+        self, batch_job_id: str, path: str, format: str = "json"
+    ) -> SavedExport:
+        """Async equivalent of Kloakd.download_batch_job."""
+        return await asave_export(
+            await self.export_batch_job(batch_job_id, format), path
         )
 
     async def _crawl_page(

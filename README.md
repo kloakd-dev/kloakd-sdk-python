@@ -142,7 +142,7 @@ continues as a job: the API answers HTTP 202 with a `poll_url`. The SDK
 follows it and returns the same typed result as a direct answer. This
 applies to `evadr.fetch`, `kolektr.page` / `page_all`,
 `fetchyr.authenticate`, `detect_forms`, `fill_form`, `detect_mfa` and
-`nexus.analyze`, `synthesize` and `execute`. The first poll is after
+`nexus.analyze` and `synthesize`. The first poll is after
 `poll_interval` seconds (default 3), each later wait half as long again up
 to 15 s, for at most `poll_timeout` seconds (default 900); set both on the
 client (`Kloakd(..., poll_interval=, poll_timeout=)`), or per call on
@@ -170,9 +170,6 @@ try:
 except ConcurrencyLimitError as e:
     print(e.tier, e.concurrent_limit, e.active_crawls, e.active_requests)
 ```
-
-**Nexus knowledge:** `nexus.execute(...)` returns `execution_result_id`;
-pass it to `nexus.knowledge(result.execution_result_id)`.
 
 ## Crawls and pages
 
@@ -241,6 +238,65 @@ site = client.crawl("https://books.toscrape.com", extract_schema=spec)
 
 An empty `item_selector`, or one without fields, raises `ValueError`; an
 invalid CSS selector is refused by the API with 422 (`ApiError`).
+
+## Crawl, extract and download
+
+One job crawls a site, extracts every page and keeps the rows for download
+(unreleased; after 0.6.0). The plan must include Kolektr, and a test key is
+refused (403).
+
+```python
+job = client.webgrph.start_crawl_extract(
+    "https://example.com", max_depth=2, max_pages=200,
+    extract={"schema": {"item_selector": "li.product",
+                        "fields": [{"name": "title", "selector": "h3"}]}},
+)
+status = client.webgrph.wait_for_crawl_extract(job.job_id)   # polls to the end
+print(status.status, status.pages_extracted, status.items, status.shapes)
+
+# or start and wait in one call (raises JobFailedError when the job fails)
+status = client.webgrph.crawl_extract("https://example.com", max_pages=200)
+
+# Rows, a page at a time (limit 1-1000) or all of them
+page = client.webgrph.get_crawl_extract_results(job.job_id, limit=500, kind="item")
+for row in client.webgrph.iter_crawl_extract_results(job.job_id):
+    print(row.page_url, row.data)
+
+# The crawled pages and how each was extracted
+failed = client.webgrph.get_crawl_extract_pages(job.job_id, status="failed")
+
+# Download: json, ndjson or csv, streamed to a file ...
+saved = client.webgrph.download_crawl_extract(job.job_id, "rows.csv", format="csv")
+print(saved.path, saved.bytes, saved.job_status)
+# ... or as a stream
+with client.webgrph.export_crawl_extract(job.job_id, format="ndjson") as export:
+    for chunk in export.iter_bytes():
+        ...
+
+client.webgrph.cancel_crawl_extract(job.job_id)   # 409 (ApiError) once it has ended
+```
+
+`extract` is the API's own object: `entity_type`, `fields` (a list of
+names) or `schema` (`item_selector` and `fields` of `{name, selector,
+attribute, type}`); without it the API chooses what to extract.
+`wait_for_crawl_extract` polls every `poll_interval` seconds (default 3) for
+at most `poll_timeout` (default 3600) and raises `JobTimeoutError` while the
+job still runs; a cancelled job is returned, not raised. An export of a job
+that has not completed holds the rows stored so far (`job_status`). The CSV
+starts with a UTF-8 byte order mark. A refused download leaves no file.
+
+A batch job's results download the same way:
+
+```python
+client.download_batch_job(batch_job_id, "batch.ndjson", format="ndjson")
+with client.export_batch_job(batch_job_id, format="csv") as export:
+    data = export.read()
+```
+
+The async client has the same methods: `await` the calls, `async for` over
+`iter_crawl_extract_results`, and
+`async with await client.webgrph.export_crawl_extract(job_id) as export:`
+with `export.aiter_bytes()`.
 
 ## Parlyr — chat
 

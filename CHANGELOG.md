@@ -8,6 +8,38 @@ Format: [Semantic Versioning](https://semver.org/). Types: `Added`, `Changed`, `
 
 ## [Unreleased]
 
+For the API on kobe-scraper integration/2026-11-12 (e5e358aa). **Breaking**:
+two methods are removed, so the next release is 0.7.0. `ROUTES.md` lists the
+routes.
+
+### Removed
+- `nexus.execute` and `NexusExecuteResult` (sync and async): the API removed
+  `POST nexus/execute`; the call could only fail.
+- `nexus.knowledge` and `NexusKnowledgeResult`: the route now takes
+  `{strategy_id, url, outcome}` (the old `{execution_result_id}` body is
+  refused) and is not part of the public API reference.
+
+### Added
+- Crawl, extract and download in one job (`webgrph`, sync and async):
+  `start_crawl_extract`, `crawl_extract`, `get_crawl_extract`,
+  `wait_for_crawl_extract`, `get_crawl_extract_results`,
+  `iter_crawl_extract_results`, `crawl_extract_all_results`,
+  `get_crawl_extract_pages`, `export_crawl_extract` (stream),
+  `download_crawl_extract` (file), `cancel_crawl_extract`. Models
+  `CrawlExtractJob`, `CrawlExtractStatus`, `CrawlExtractRow`,
+  `CrawlExtractResultsPage`, `CrawlExtractPage`, `CrawlExtractPagesResult`,
+  `CrawlExtractCancelResult`, `ExportDownload`, `AsyncExportDownload`,
+  `SavedExport`. A `limit` outside 1-1000 or a `format` other than `json`,
+  `ndjson` or `csv` raises `ValueError` before the request.
+- `client.export_batch_job` and `client.download_batch_job` (sync and
+  async): a batch job's results as json, ndjson or csv.
+- `NexusVerifyResult.status`, `risk_score`, `safety_checks`
+  (`NexusSafetyCheck`), `verification_result_id`, `duration_ms`.
+
+### Changed
+- Exports are streamed and read without a read timeout; an error status is
+  raised (and retried) as for any GET before the body is handed on.
+
 ## [0.6.0] — 2026-11-03
 
 For the API deployed on 2 November 2026 (kobe-scraper 0bb0c6b5). Backward

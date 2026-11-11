@@ -1,4 +1,4 @@
-"""Nexus: analyse, synthesise, verify, execute, knowledge."""
+"""Nexus: analyse, synthesise, verify, reason."""
 
 from __future__ import annotations
 
@@ -46,21 +46,32 @@ def test_verify_reads_verified(client: Kloakd) -> None:
 
 
 @respx.mock
-def test_execute_reads_records_and_error_message(client: Kloakd) -> None:
-    respx.post(f"{BASE}/nexus/execute").mock(return_value=mock_response(
-        {"url": "u", "strategy_id": "s1", "records": [{"a": 1}], "success": False, "error_message": "timeout"}
-    ))
-    r = client.nexus.execute("s1", "u")
-    assert (r.records, r.error, r.ok) == ([{"a": 1}], "timeout", False)
+def test_verify_reads_the_whole_response(client: Kloakd) -> None:
+    # modules/nexus/router.py VerifyResponse
+    respx.post(f"{BASE}/nexus/verify").mock(return_value=mock_response({
+        "strategy_id": "s1", "verified": True, "violations": [], "safety_score": 0.9,
+        "verification_result_id": "v-1", "status": "verified", "risk_score": 0.1,
+        "duration_ms": 42,
+        "safety_checks": [
+            {"property": "no_network", "passed": True, "details": "ok"},
+            {"property": "bounded", "passed": False},
+        ],
+    }))
+    r = client.nexus.verify("s1")
+    assert (r.status, r.risk_score, r.verification_result_id, r.duration_ms) == ("verified", 0.1, "v-1", 42)
+    assert [(c.property, c.passed, c.details) for c in r.safety_checks] == [
+        ("no_network", True, "ok"), ("bounded", False, ""),
+    ]
+    assert r.ok
 
 
-@respx.mock
-def test_knowledge_reads_patterns(client: Kloakd) -> None:
-    respx.post(f"{BASE}/nexus/knowledge").mock(return_value=mock_response(
-        {"execution_result_id": "e1", "learned_concepts": [], "patterns": [{"p": 1}], "total_patterns": 1}
-    ))
-    r = client.nexus.knowledge("e1")
-    assert (len(r.patterns), r.total_patterns) == (1, 1)
+def test_execute_and_knowledge_are_removed(client: Kloakd) -> None:
+    import kloakd
+
+    assert not hasattr(client.nexus, "execute")
+    assert not hasattr(client.nexus, "knowledge")
+    assert not hasattr(kloakd, "NexusExecuteResult")
+    assert not hasattr(kloakd, "NexusKnowledgeResult")
 
 
 @respx.mock
