@@ -859,3 +859,136 @@ class ExtractionResult:
     @property
     def ok(self) -> bool:
         return self.success and self.error is None
+
+
+# ---------------------------------------------------------------------------
+# Batch jobs (batch-jobs)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class BatchJob:
+    """A batch job (kobe-scraper kernel/jobs_runs_router.py BatchJob)."""
+
+    id: str
+    name: str
+    #: ``pending``, ``running``, ``paused``, ``held_quota``, ``completed``,
+    #: ``failed`` or ``cancelled``. A paused batch starts no further item
+    #: until it is resumed; items that were already running finish.
+    status: str
+    total_items: int = 0
+    #: Items that completed or failed.
+    completed_items: int = 0
+    created_at: str = ""
+    #: The API's note for a paused batch or one held for quota; None otherwise.
+    message: Optional[str] = None
+
+
+@dataclass
+class BatchJobsPage:
+    """One page of the organisation's batch jobs, newest first (BatchJobsList)."""
+
+    #: All of the organisation's batch jobs, not only this page.
+    total: int = 0
+    batch_jobs: List[BatchJob] = field(default_factory=list)
+
+
+@dataclass
+class BatchJobItem:
+    """One item (URL) of a batch, as ``batch-jobs/{id}/results`` lists it."""
+
+    job_id: str
+    url: Optional[str] = None
+    #: ``pending``, ``running``, ``held_quota``, ``completed``, ``failed``
+    #: or ``cancelled``.
+    status: str = ""
+    #: What the item extracted; None until it completes.
+    extracted_data: Any = None
+    #: Records of a detected API the item's URL names; None otherwise.
+    api_data: Optional[Dict[str, Any]] = None
+
+
+@dataclass
+class BatchJobResults:
+    """A batch's items and their results (BatchJobResults)."""
+
+    batch_job_id: str
+    #: The items asked for: all of them, or ``limit`` from ``offset``, in
+    #: creation order.
+    results: List[BatchJobItem] = field(default_factory=list)
+    #: The three counts are of the whole batch when ``limit`` was given;
+    #: without ``limit`` (and with an ``offset``) they count the items
+    #: returned.
+    total_jobs: int = 0
+    completed_jobs: int = 0
+    failed_jobs: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Unified scrape (scraping/unified)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class UnifiedEscalation:
+    """One step of a unified scrape's escalation (EscalationEvent; the API's
+    ``from`` and ``to`` are ``from_level`` and ``to_level`` here)."""
+
+    from_level: str
+    to_level: str
+    reason: str = ""
+    timestamp: str = ""
+
+
+@dataclass
+class UnifiedScrapeResult:
+    """The answer of ``client.unified_scrape`` (kobe-scraper
+    api/v1/endpoints/unified_scraping.py UnifiedScrapeResponse)."""
+
+    success: bool
+    #: The scrape's job: read it with ``client.get_unified_scrape(job_id)``.
+    job_id: str
+    #: ``level1``, ``level2``, or ``preflight`` when a login page was found
+    #: before any scrape.
+    level: str = ""
+    status: str = ""
+    escalation_path: List[UnifiedEscalation] = field(default_factory=list)
+    message: str = ""
+    metadata: Optional[Dict[str, Any]] = None
+    #: True when the URL is behind a login: nothing was scraped, ``status``
+    #: is ``auth_required`` and ``discovery_id`` names the auth-chain
+    #: discovery (``fetchyr.get_auth_chain_status``). ``job_id`` then names
+    #: no stored job.
+    auth_required: bool = False
+    discovery_id: Optional[str] = None
+
+
+@dataclass
+class UnifiedScrapeProgress:
+    """Progress of a running unified scrape (ProgressDetail)."""
+
+    percentage: int = 0
+    current_step: str = ""
+    items_found: Optional[int] = None
+    items_target: Optional[int] = None
+    #: The first few results, when there are any.
+    partial_results: Optional[List[Dict[str, Any]]] = None
+
+
+@dataclass
+class UnifiedScrapeStatus:
+    """The state of a unified scrape job (JobStatusResponse)."""
+
+    id: str
+    status: str
+    level: str = ""
+    progress: Optional[int] = None
+    #: Set while the job is running.
+    progress_detail: Optional[UnifiedScrapeProgress] = None
+    created_at: str = ""
+    updated_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    error: Optional[str] = None
+    #: The job's stored result document; None until there is one.
+    result: Optional[Dict[str, Any]] = None
+    escalation_path: List[UnifiedEscalation] = field(default_factory=list)

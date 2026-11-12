@@ -6,7 +6,8 @@ then, it answers 202 with ``job_id`` and ``poll_url`` and the work goes on
 as a job. These routes do so: ``evadr/fetch`` (``poll_url`` is
 ``…/evadr/jobs/{job_id}``), ``kolektr/extract``, ``fetchyr/authenticate``,
 ``fetchyr/form/detect``, ``fetchyr/form/fill``, ``fetchyr/mfa/detect``,
-``nexus/analyze`` and ``nexus/synthesize`` (``poll_url`` is
+``nexus/analyze``, ``nexus/synthesize`` and ``scraping/unified``
+(``poll_url`` is
 ``/api/v1/organizations/{org}/handoff/{job_id}``, kobe-scraper
 ``kernel/sync_handoff.py``).
 

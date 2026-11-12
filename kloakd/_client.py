@@ -21,6 +21,16 @@ from __future__ import annotations
 
 from typing import Any, AsyncIterator, Dict, Iterator, List, Optional, Union
 
+from kloakd._batch import (
+    batch_control_op,
+    batch_job_results_op,
+    create_batch_job_op,
+    get_batch_job_op,
+    get_unified_scrape_op,
+    list_batch_jobs_op,
+    parse_unified_result,
+    unified_scrape_body,
+)
 from kloakd._download import (
     AsyncExportDownload,
     ExportDownload,
@@ -39,14 +49,19 @@ from kloakd.errors import (
     RateLimitError,
 )
 from kloakd.models import (
+    BatchJob,
+    BatchJobResults,
+    BatchJobsPage,
     CrawlPage,
     CrawlProgressEvent,
     CrawlResult,
     FetchResult,
     SavedExport,
     SiteCrawlResult,
+    UnifiedScrapeResult,
+    UnifiedScrapeStatus,
 )
-from kloakd.modules._ops import as_dict, seg
+from kloakd.modules._ops import arun, as_dict, run, seg
 from kloakd.modules.evadr import AsyncEvadrNamespace, EvadrNamespace
 from kloakd.modules.fetchyr import AsyncFetchyrNamespace, FetchyrNamespace
 from kloakd.modules.kolektr import AsyncKolektrNamespace, KolektrNamespace
@@ -404,6 +419,133 @@ class Kloakd:
         The file is created once the API has answered 200."""
         return save_export(self.export_batch_job(batch_job_id, format), path)
 
+    def create_batch_job(
+        self,
+        urls: List[str],
+        extraction_config: Optional[Dict[str, Any]] = None,
+        crawl_id: Optional[str] = None,
+        entity_type: Optional[str] = None,
+        fields: Optional[List[str]] = None,
+    ) -> BatchJob:
+        """Create a batch job: one extraction per URL (``POST batch-jobs``,
+        201). ``extraction_config`` says how each URL is extracted (for
+        example ``{"selectors": {"title": "h1"}}``); ``crawl_id`` is the
+        crawl the URLs came from (its detected-API records are added to the
+        results); ``entity_type`` is what each page holds; ``fields`` are
+        the names of the fields to extract. The batch holds one work slot
+        until it ends.
+
+        Raises ForbiddenError (403 ``test_key_not_allowed``) for a test
+        key, ApiError 413 ``batch_too_large`` over the tier's URL limit,
+        ApiError 422 for an empty list, ConcurrencyLimitError (409) at the
+        tier's running batches, and ApiError 503 ``dispatch_failed`` when
+        the batch could not be queued (nothing was started). Never
+        retried."""
+        return run(self._transport, create_batch_job_op(urls, extraction_config, crawl_id, entity_type, fields))
+
+    def get_batch_job(self, batch_job_id: str) -> BatchJob:
+        """A batch job's state (``GET batch-jobs/{batch_job_id}``). A batch
+        that is not yours raises ApiError 404."""
+        return run(self._transport, get_batch_job_op(batch_job_id))
+
+    def list_batch_jobs(
+        self, page: Optional[int] = None, page_size: Optional[int] = None
+    ) -> BatchJobsPage:
+        """The organisation's batch jobs, newest first (``GET batch-jobs``;
+        ``page_size`` 1 to 100, the API's default is 20)."""
+        return run(self._transport, list_batch_jobs_op(page, page_size))
+
+    def get_batch_job_results(
+        self,
+        batch_job_id: str,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
+    ) -> BatchJobResults:
+        """A batch's items with what each extracted
+        (``GET batch-jobs/{batch_job_id}/results``). Every item without
+        ``limit``; with ``limit`` (1 to 1000) that many from ``offset``,
+        and the counts are then of the whole batch. To download the rows
+        use ``export_batch_job``."""
+        return run(self._transport, batch_job_results_op(batch_job_id, limit, offset))
+
+    def pause_batch_job(self, batch_job_id: str) -> BatchJob:
+        """Pause a running batch (``POST batch-jobs/{batch_job_id}/pause``).
+        Items already running finish; no other item starts until
+        ``resume_batch_job``. Pausing a paused batch changes nothing. A
+        batch in any other state raises ApiError 409 with ``code``
+        ``invalid_batch_transition``."""
+        return run(self._transport, batch_control_op(batch_job_id, "pause"))
+
+    def resume_batch_job(self, batch_job_id: str) -> BatchJob:
+        """Resume a paused batch (``POST batch-jobs/{batch_job_id}/resume``):
+        the items held while it was paused are queued again, each once.
+        Resuming a running batch changes nothing. A batch in any other
+        state raises ApiError 409 with ``code``
+        ``invalid_batch_transition``. Gated like creation (quota, payment,
+        ConcurrencyLimitError at the tier's running batches). ApiError 503
+        with ``code`` ``dispatch_failed`` means the items could not be
+        queued and the batch is paused again: call it again."""
+        return run(self._transport, batch_control_op(batch_job_id, "resume"))
+
+    def cancel_batch_job(self, batch_job_id: str) -> BatchJob:
+        """Cancel a batch and every item of it that has not ended
+        (``POST batch-jobs/{batch_job_id}/cancel``). Completed and failed
+        items keep their results. Cancelling a cancelled batch changes
+        nothing. A batch that has completed or failed raises ApiError 409
+        with ``code`` ``invalid_batch_transition``."""
+        return run(self._transport, batch_control_op(batch_job_id, "cancel"))
+
+    def unified_scrape(
+        self,
+        url: str,
+        prompt: Optional[str] = None,
+        mode: Optional[str] = None,
+        schema: Optional[Dict[str, str]] = None,
+        options: Optional[Dict[str, Any]] = None,
+        context: Optional[Dict[str, Any]] = None,
+        constraints: Optional[Dict[str, Any]] = None,
+        session_artifact_id: Optional[str] = None,
+        poll_interval: float = DEFAULT_POLL_INTERVAL,
+        poll_timeout: float = DEFAULT_POLL_TIMEOUT,
+    ) -> UnifiedScrapeResult:
+        """Scrape a URL and let the API choose how (``POST
+        scraping/unified``): level 1 (direct extraction) or level 2 (the
+        Strategy Engine), with escalation when the first fails.
+
+        ``prompt`` says what to extract; ``mode`` is ``auto`` (the API's
+        default), ``level1`` or ``level2``; ``schema`` maps a field name to
+        its description (made from ``prompt`` when omitted); ``options``
+        are scraping options; ``context`` and ``constraints`` are for the
+        Strategy Engine; ``session_artifact_id`` is a login session's id.
+
+        Needs a live API key entitled to Kolektr and Nexus (ForbiddenError,
+        403 ``test_key_not_allowed`` or ``module_not_entitled``). A request
+        the API hands off as a job (202) is followed to its result, as
+        ``evadr.fetch`` is. The answer names the job; read its state and
+        data with ``get_unified_scrape``. When the URL is behind a login
+        the answer has ``auth_required`` true and nothing was scraped."""
+        raw = self._transport.post_following(
+            "scraping/unified",
+            unified_scrape_body(
+                url,
+                prompt,
+                mode,
+                schema,
+                options,
+                context,
+                constraints,
+                session_artifact_id,
+            ),
+            PollOptions(poll_interval, poll_timeout),
+        )
+        return parse_unified_result(raw)
+
+    def get_unified_scrape(self, job_id: str) -> UnifiedScrapeStatus:
+        """The state of a unified scrape job and, once it has one, its
+        result (``GET scraping/unified/{job_id}``). A job that is not yours
+        raises ApiError 404."""
+        return run(self._transport, get_unified_scrape_op(job_id))
+
     def _crawl_page(
         self,
         url: str,
@@ -679,6 +821,82 @@ class AsyncKloakd:
         return await asave_export(
             await self.export_batch_job(batch_job_id, format), path
         )
+
+    async def create_batch_job(
+        self,
+        urls: List[str],
+        extraction_config: Optional[Dict[str, Any]] = None,
+        crawl_id: Optional[str] = None,
+        entity_type: Optional[str] = None,
+        fields: Optional[List[str]] = None,
+    ) -> BatchJob:
+        """Async equivalent of Kloakd.create_batch_job."""
+        return await arun(self._transport, create_batch_job_op(urls, extraction_config, crawl_id, entity_type, fields))
+
+    async def get_batch_job(self, batch_job_id: str) -> BatchJob:
+        """Async equivalent of Kloakd.get_batch_job."""
+        return await arun(self._transport, get_batch_job_op(batch_job_id))
+
+    async def list_batch_jobs(
+        self, page: Optional[int] = None, page_size: Optional[int] = None
+    ) -> BatchJobsPage:
+        """Async equivalent of Kloakd.list_batch_jobs."""
+        return await arun(self._transport, list_batch_jobs_op(page, page_size))
+
+    async def get_batch_job_results(
+        self,
+        batch_job_id: str,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
+    ) -> BatchJobResults:
+        """Async equivalent of Kloakd.get_batch_job_results."""
+        return await arun(self._transport, batch_job_results_op(batch_job_id, limit, offset))
+
+    async def pause_batch_job(self, batch_job_id: str) -> BatchJob:
+        """Async equivalent of Kloakd.pause_batch_job."""
+        return await arun(self._transport, batch_control_op(batch_job_id, "pause"))
+
+    async def resume_batch_job(self, batch_job_id: str) -> BatchJob:
+        """Async equivalent of Kloakd.resume_batch_job."""
+        return await arun(self._transport, batch_control_op(batch_job_id, "resume"))
+
+    async def cancel_batch_job(self, batch_job_id: str) -> BatchJob:
+        """Async equivalent of Kloakd.cancel_batch_job."""
+        return await arun(self._transport, batch_control_op(batch_job_id, "cancel"))
+
+    async def unified_scrape(
+        self,
+        url: str,
+        prompt: Optional[str] = None,
+        mode: Optional[str] = None,
+        schema: Optional[Dict[str, str]] = None,
+        options: Optional[Dict[str, Any]] = None,
+        context: Optional[Dict[str, Any]] = None,
+        constraints: Optional[Dict[str, Any]] = None,
+        session_artifact_id: Optional[str] = None,
+        poll_interval: float = DEFAULT_POLL_INTERVAL,
+        poll_timeout: float = DEFAULT_POLL_TIMEOUT,
+    ) -> UnifiedScrapeResult:
+        """Async equivalent of Kloakd.unified_scrape."""
+        raw = await self._transport.post_following(
+            "scraping/unified",
+            unified_scrape_body(
+                url,
+                prompt,
+                mode,
+                schema,
+                options,
+                context,
+                constraints,
+                session_artifact_id,
+            ),
+            PollOptions(poll_interval, poll_timeout),
+        )
+        return parse_unified_result(raw)
+
+    async def get_unified_scrape(self, job_id: str) -> UnifiedScrapeStatus:
+        """Async equivalent of Kloakd.get_unified_scrape."""
+        return await arun(self._transport, get_unified_scrape_op(job_id))
 
     async def _crawl_page(
         self,

@@ -1,10 +1,35 @@
 # Routes the SDK calls (unreleased, after 0.6.0)
 
+## Batch jobs and the unified scrape
+
+Checked against kobe-scraper integration/2026-11-12b (228857dc):
+`kernel/jobs_runs_router.py`, `application/jobs/batch_control.py` and
+`api/v1/endpoints/unified_scraping.py`. `tests/fixtures/routes.tsv` is
+generated from that checkout: 280 rows. The 12 `performance/...` routes are
+gone from the API; the SDK called none of them.
+`tests/test_batch_unified.py` checks the new calls against the list.
+
+| Method | Path | After 0.6.0 |
+|---|---|---|
+| POST | batch-jobs | new: `client.create_batch_job`; body `{urls, extraction_config?, crawl_id?, entity_type?, fields?}`; 201; 403 `test_key_not_allowed`, 409 `concurrent_limit`, 413 `batch_too_large`, 422 for no URLs, 503 `dispatch_failed` |
+| GET | batch-jobs | new: `client.list_batch_jobs`; `page`, `page_size` (1-100) |
+| GET | batch-jobs/{batch_job_id} | new: `client.get_batch_job` |
+| GET | batch-jobs/{batch_job_id}/results | new: `client.get_batch_job_results`; `limit` (1-1000), `offset`; each item is `{job_id, url, status, extracted_data, api_data}` |
+| POST | batch-jobs/{batch_job_id}/pause | new: `client.pause_batch_job`; only a running batch; a paused one answers 200 unchanged; otherwise 409 `invalid_batch_transition` |
+| POST | batch-jobs/{batch_job_id}/resume | new: `client.resume_batch_job`; only a paused batch; a running one answers 200 unchanged; otherwise 409 `invalid_batch_transition`; 409 `concurrent_limit`; 503 `dispatch_failed` (paused again) |
+| POST | batch-jobs/{batch_job_id}/cancel | new: `client.cancel_batch_job`; a cancelled one answers 200 unchanged; 409 `invalid_batch_transition` once completed or failed |
+| POST | scraping/unified | new: `client.unified_scrape`; body `{url, prompt?, mode?, schema?, options?, context?, constraints?, session_artifact_id?}`; a 202 hand-off is followed through `GET handoff/{job_id}`; 403 `test_key_not_allowed`, `module_not_entitled` |
+| GET | scraping/unified/{job_id} | new: `client.get_unified_scrape` |
+
+Not covered, by choice: `DELETE batch/{batch_job_id}`, `POST
+batch/url-import` and the event stream `GET
+batch-jobs/{batch_job_id}/stream`. There is no batch waiter.
+
 ## Changed after 0.6.0
 
 Checked against kobe-scraper 6bd19e9b (main, 12 November 2026). The route
-list in `tests/fixtures/routes.tsv` was generated again from that commit
-(292 rows: every route of `kobe_scraper.api.app` with the module routers,
+list in `tests/fixtures/routes.tsv` was then generated again from that commit
+(292 rows; 280 since integration/2026-11-12b, see above: every route of `kobe_scraper.api.app` with the module routers,
 the crawl-extract router and the playground and free-tier routers mounted
 as `kernel/bootstrap.py` does). `tests/test_contract.py` calls every public
 method of the sync and the async client and fails on any request that is
@@ -36,18 +61,18 @@ not in the list.
 | POST | nexus/analyze, synthesize, verify | `error` is no longer read (no answer has it) |
 | POST | nexus/reason | `timeout_secs` may be a fraction (ReasonRequest: float) |
 
-## Routes in the list the SDK does not call (6bd19e9b)
+## Routes in the list the SDK does not call
 
 Under the seven namespaces, three: `GET skanyr/resources/{id}/download`
 (binary body), `GET parlyr/chat/{id}/events`, and `POST nexus/knowledge`
 (left out of the public API reference).
 
-Outside the namespaces the SDK calls `GET handoff/{job_id}` and
-`GET batch-jobs/{batch_job_id}/export` only. Not covered: the other
-`batch-jobs` routes (create, list, read, results, stream, pause, resume,
-cancel) and `batch/*`, `jobs`, `results`, `webhooks` (deliveries, retry and
-rotate-secret included), `activity`, `scrapers`, `scraping`, `screenshots`,
-`pipeline`, `analysis`, `analytics`, `performance`, `monitoring`,
+Outside the namespaces the SDK calls `GET handoff/{job_id}`, the
+`batch-jobs` routes except the event stream, and `scraping/unified` with
+its job read. Not covered: `GET batch-jobs/{batch_job_id}/stream`,
+`batch/*`, `jobs`, `results`, `webhooks` (deliveries, retry and
+rotate-secret included), `activity`, `scrapers`, the other `scraping`
+routes, `screenshots`, `pipeline`, `analysis`, `analytics`, `monitoring`,
 `integrations`, `workspaces`, `users`, `members`, and everything outside
 `/api/v1/organizations/{organization_id}/` (auth, billing, free, playground,
 ops, system, health, invitations). The five `webgrph/analytics/*` routes

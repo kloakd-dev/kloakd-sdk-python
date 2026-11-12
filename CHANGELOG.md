@@ -8,7 +8,9 @@ Format: [Semantic Versioning](https://semver.org/). Types: `Added`, `Changed`, `
 
 ## [Unreleased]
 
-For the API at kobe-scraper 6bd19e9b (main, 12 November 2026). **Breaking**:
+For the API at kobe-scraper 6bd19e9b (main, 12 November 2026); the batch
+and unified scrape methods and the route list are of
+integration/2026-11-12b (228857dc). **Breaking**:
 two methods and some attributes the API never filled are removed, and a
 crawl without `max_depth` or `max_pages` now runs to the plan's limits, so
 the next release is 0.7.0. `ROUTES.md` lists the routes.
@@ -42,6 +44,20 @@ the next release is 0.7.0. `ROUTES.md` lists the routes.
   `ndjson` or `csv` raises `ValueError` before the request.
 - `client.export_batch_job` and `client.download_batch_job` (sync and
   async): a batch job's results as json, ndjson or csv.
+- Batch jobs (`client`, sync and async): `create_batch_job(urls,
+  extraction_config, crawl_id, entity_type, fields)`, `get_batch_job`,
+  `list_batch_jobs`, `get_batch_job_results`, `pause_batch_job`,
+  `resume_batch_job`, `cancel_batch_job`. A control the batch's state does
+  not allow raises a 409 `ApiError` with `code` `invalid_batch_transition`;
+  repeating a control answers the batch as it is; a resume or a create that
+  could not be queued raises a 503 `ApiError` with `code` `dispatch_failed`
+  and is not retried. Models `BatchJob`, `BatchJobsPage`, `BatchJobItem`,
+  `BatchJobResults`.
+- Unified scrape (`client`, sync and async): `unified_scrape(url, prompt,
+  mode, schema, options, context, constraints, session_artifact_id)`
+  (`POST scraping/unified`, a 202 hand-off is followed) and
+  `get_unified_scrape(job_id)`. Models `UnifiedScrapeResult`,
+  `UnifiedScrapeStatus`, `UnifiedScrapeProgress`, `UnifiedEscalation`.
 - `NexusVerifyResult.status`, `risk_score`, `safety_checks`
   (`NexusSafetyCheck`), `verification_result_id`, `duration_ms`.
 - Crawls held for quota (sync and async). A crawl whose organization ran
@@ -81,7 +97,9 @@ the next release is 0.7.0. `ROUTES.md` lists the routes.
   were sent as 3 and 100; without them the plan's limits now apply.
 - `nexus.reason(timeout_secs=...)` accepts a fraction of a second.
 - The route list the contract test checks against was generated again
-  (292 routes); the test also covers the new methods.
+  from kobe-scraper integration/2026-11-12b (228857dc): 280 routes. The API
+  removed its 12 `performance/...` routes; the SDK called none. The test
+  also covers the new methods.
 - Exports are streamed and read without a read timeout; an error status is
   raised (and retried) as for any GET before the body is handed on.
 

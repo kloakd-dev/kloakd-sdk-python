@@ -11,7 +11,6 @@ DELETE	/api/v1/organizations/{organization_id}/kolektr/content/{item_id}
 DELETE	/api/v1/organizations/{organization_id}/kolektr/scrapers/{scraper_id}
 DELETE	/api/v1/organizations/{organization_id}/members/{user_id}
 DELETE	/api/v1/organizations/{organization_id}/parlyr/chat/{session_id}
-DELETE	/api/v1/organizations/{organization_id}/performance/queue/request/{request_id}
 DELETE	/api/v1/organizations/{organization_id}/scrapers/{scraper_id}
 DELETE	/api/v1/organizations/{organization_id}/screenshots/{job_id}
 DELETE	/api/v1/organizations/{organization_id}/skanyr/sites/{site_id}
@@ -109,15 +108,6 @@ GET	/api/v1/organizations/{organization_id}/monitoring/health
 GET	/api/v1/organizations/{organization_id}/monitoring/performance
 GET	/api/v1/organizations/{organization_id}/monitoring/statistics
 GET	/api/v1/organizations/{organization_id}/parlyr/chat/{session_id}/events
-GET	/api/v1/organizations/{organization_id}/performance/cache/stats
-GET	/api/v1/organizations/{organization_id}/performance/health
-GET	/api/v1/organizations/{organization_id}/performance/queue/request/{request_id}
-GET	/api/v1/organizations/{organization_id}/performance/queue/requests
-GET	/api/v1/organizations/{organization_id}/performance/queue/status
-GET	/api/v1/organizations/{organization_id}/performance/quota/status
-GET	/api/v1/organizations/{organization_id}/performance/quota/tiers
-GET	/api/v1/organizations/{organization_id}/performance/rate-limit/status
-GET	/api/v1/organizations/{organization_id}/performance/stats
 GET	/api/v1/organizations/{organization_id}/pipeline/{pipeline_id}/events
 GET	/api/v1/organizations/{organization_id}/pipeline/{pipeline_id}/stream
 GET	/api/v1/organizations/{organization_id}/results/{job_id}/full
@@ -259,8 +249,6 @@ POST	/api/v1/organizations/{organization_id}/nexus/synthesize
 POST	/api/v1/organizations/{organization_id}/nexus/verify
 POST	/api/v1/organizations/{organization_id}/parlyr/chat
 POST	/api/v1/organizations/{organization_id}/parlyr/parse
-POST	/api/v1/organizations/{organization_id}/performance/cache/clear
-POST	/api/v1/organizations/{organization_id}/performance/quota/check/{quota_type}
 POST	/api/v1/organizations/{organization_id}/scraping/unified
 POST	/api/v1/organizations/{organization_id}/skanyr/extract
 POST	/api/v1/organizations/{organization_id}/skanyr/search

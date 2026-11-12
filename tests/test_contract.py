@@ -1,8 +1,8 @@
 """Every request the SDK makes is a live API route (method and path).
 
-tests/fixtures/routes.tsv is the backend's route list (METHOD\\tPATH, 292
-rows, generated from kobe-scraper main 6bd19e9b with the module routers
-mounted as kernel/bootstrap.py does). Each public method of each namespace, sync and
+tests/fixtures/routes.tsv is the backend's route list (METHOD\\tPATH, 280
+rows, generated from kobe-scraper integration/2026-11-12b at 228857dc with
+the module routers mounted as kernel/bootstrap.py does). Each public method of each namespace, sync and
 async, is called with placeholder arguments against a recording mock.
 
 0.4.0 edits to the list, from kobe-scraper's code: the 13
@@ -23,6 +23,10 @@ list: ``POST nexus/execute`` is deleted (modules/nexus/router.py); the six
 ``POST fetchyr/login-sessions`` and ``GET fetchyr/sessions/{artifact_id}``
 with its ``/resume`` (modules/fetchyr/router.py) are added; the five
 remaining ``webgrph/analytics/*`` routes are gone.
+
+The list was generated again from integration/2026-11-12b (228857dc): the
+12 ``performance/...`` routes are gone (280 rows). The client's own methods
+(batch jobs, the unified scrape) are checked in tests/test_batch_unified.py.
 """
 
 from __future__ import annotations

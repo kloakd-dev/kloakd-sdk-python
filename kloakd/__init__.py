@@ -24,7 +24,7 @@ Quickstart::
         print(record)
 
 Requests that run long (fetch, extract, the Fetchyr form and login calls,
-Nexus analyze/synthesize) may be handed off by the API as a job
+Nexus analyze/synthesize, the unified scrape) may be handed off by the API as a job
 (HTTP 202, after about 85 s); the SDK follows it and returns the same result.
 A request whose wait ran out raises JobTimeoutError; resume it with
 ``client.wait_for_handoff(e.job_id)``.
@@ -51,6 +51,10 @@ from kloakd.errors import (
 )
 from kloakd.models import (
     AnalyzeResult,
+    BatchJob,
+    BatchJobItem,
+    BatchJobResults,
+    BatchJobsPage,
     ChatEvent,
     ChatTurn,
     CrawlContinueResult,
@@ -87,6 +91,10 @@ from kloakd.models import (
     SessionResult,
     SessionStatus,
     SiteCrawlResult,
+    UnifiedEscalation,
+    UnifiedScrapeProgress,
+    UnifiedScrapeResult,
+    UnifiedScrapeStatus,
     WorkflowExecutionResult,
     WorkflowResult,
 )
@@ -133,6 +141,16 @@ __all__ = [
     "AsyncExportDownload",
     "SavedExport",
     "ExportCrawl",
+    # Batch jobs
+    "BatchJob",
+    "BatchJobsPage",
+    "BatchJobItem",
+    "BatchJobResults",
+    # Unified scrape
+    "UnifiedScrapeResult",
+    "UnifiedScrapeStatus",
+    "UnifiedScrapeProgress",
+    "UnifiedEscalation",
     # Crawl orchestrator models
     "CrawlPage",
     "SiteCrawlResult",

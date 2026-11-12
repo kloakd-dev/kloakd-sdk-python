@@ -123,7 +123,7 @@ except KloakdError as e:
 | `UpstreamError` | 502 | Target site unreachable |
 | `BillingUnavailableError` | 503 | Usage could not be checked; retried after `retry_after` |
 | `JobFailedError` / `JobTimeoutError` | — | A handed-off request, fetch job or crawl failed (or expired), or was still running when the wait ran out (`job_id`) |
-| `ApiError` | 4xx/5xx | Any other API error (a 422 keeps the validation messages) |
+| `ApiError` | 4xx/5xx | Any other API error (a 422 keeps the validation messages). `code` holds the API's error code, for example 409 `invalid_batch_transition` and 503 `dispatch_failed` on the batch calls |
 
 Every error has `message`, `status_code` and `code` (the API's error code,
 such as `rate_limited`, or None). A response that is not JSON (a proxy's
@@ -141,12 +141,12 @@ Cloudflare, which closes requests at 100 s). A request still running then
 continues as a job: the API answers HTTP 202 with a `poll_url`. The SDK
 follows it and returns the same typed result as a direct answer. This
 applies to `evadr.fetch`, `kolektr.page` / `page_all`,
-`fetchyr.authenticate`, `detect_forms`, `fill_form`, `detect_mfa` and
-`nexus.analyze` and `synthesize`. The first poll is after
+`fetchyr.authenticate`, `detect_forms`, `fill_form`, `detect_mfa`,
+`nexus.analyze` and `synthesize` and `client.unified_scrape`. The first poll is after
 `poll_interval` seconds (default 3), each later wait half as long again up
 to 15 s, for at most `poll_timeout` seconds (default 900); set both on the
 client (`Kloakd(..., poll_interval=, poll_timeout=)`), or per call on
-`evadr.fetch`. A failed job, or one whose result has expired (an hour after
+`evadr.fetch` and `client.unified_scrape`. A failed job, or one whose result has expired (an hour after
 it ends), raises `JobFailedError`; one still running at the timeout raises
 `JobTimeoutError` with its `job_id`. Resume it with
 `client.wait_for_handoff(e.job_id)` (or read its state once with
@@ -380,6 +380,78 @@ The async client has the same methods: `await` the calls, `async for` over
 `iter_crawl_extract_results`, and
 `async with await client.webgrph.export_crawl_extract(job_id) as export:`
 with `export.aiter_bytes()`.
+
+## Batch jobs
+
+A batch extracts a list of URLs, one item per URL, and holds one work slot
+until it ends. It needs a live key (a test key is refused with 403).
+
+```python
+batch = client.create_batch_job(
+    ["https://shop.example/p/1", "https://shop.example/p/2"],
+    entity_type="products",
+    fields=["name", "price"],
+)
+
+client.pause_batch_job(batch.id)    # items already running finish; the rest wait
+client.resume_batch_job(batch.id)   # the waiting items are queued again, each once
+state = client.get_batch_job(batch.id)  # status, total_items, completed_items, message
+
+page = client.get_batch_job_results(batch.id, limit=100)
+for item in page.results:
+    print(item.job_id, item.status, item.extracted_data)
+
+client.cancel_batch_job(batch.id)   # items not yet ended are cancelled; finished ones keep their results
+```
+
+- `status` is `pending`, `running`, `paused`, `held_quota`, `completed`,
+  `failed` or `cancelled`. Only a running batch can be paused, only a
+  paused one resumed, and a batch that has completed or failed cannot be
+  cancelled: the API answers 409 and the SDK raises an `ApiError` with
+  `code` `invalid_batch_transition` (the message names the batch's status).
+- Repeating a call is not an error: pausing a paused batch, resuming a
+  running one and cancelling a cancelled one answer the batch as it is.
+- `resume_batch_job` can raise a 503 `ApiError` with `code`
+  `dispatch_failed`: the items could not be queued and the batch is paused
+  again, so call it again. `create_batch_job` raises the same when the
+  batch could not be queued; nothing was started. Neither is retried by
+  the SDK.
+- Creating or resuming over the plan's running batches raises
+  `ConcurrencyLimitError`; more URLs than the plan's limit is a 413
+  `ApiError` with `code` `batch_too_large`.
+- `client.list_batch_jobs(page=1, page_size=20)` lists the organisation's
+  batches, newest first. `export_batch_job` and `download_batch_job`
+  (above) give the rows as a file.
+
+## Unified scrape
+
+`client.unified_scrape(url, ...)` lets the API choose how to scrape a URL:
+level 1 (direct extraction) or level 2 (the Strategy Engine), escalating
+when the first fails. It needs a live key whose plan has Kolektr and Nexus
+(`ForbiddenError` with `code` `test_key_not_allowed` or
+`module_not_entitled` otherwise).
+
+```python
+scrape = client.unified_scrape(
+    "https://shop.example/list",
+    prompt="product names and prices",
+    mode="auto",  # or "level1", "level2"
+    schema={"name": "product name", "price": "price"},
+)
+if scrape.auth_required:
+    # The URL is behind a login: nothing was scraped.
+    # scrape.discovery_id names the auth-chain discovery.
+    ...
+else:
+    job = client.get_unified_scrape(scrape.job_id)  # status, level, progress, result, escalation_path
+```
+
+Arguments: `prompt`, `mode`, `schema`, `options`, `context`, `constraints`,
+`session_artifact_id` (a login session), and `poll_interval` /
+`poll_timeout` for a request the API hands off (202), which is followed
+like every other long request.
+
+The async client has the same batch and unified scrape methods.
 
 ## Parlyr — chat
 
