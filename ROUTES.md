@@ -1,4 +1,4 @@
-# Routes the SDK calls (unreleased, after 0.6.0)
+# Routes the SDK calls (0.7.0)
 
 ## Batch jobs and the unified scrape
 
@@ -9,7 +9,7 @@ generated from that checkout: 280 rows. The 12 `performance/...` routes are
 gone from the API; the SDK called none of them.
 `tests/test_batch_unified.py` checks the new calls against the list.
 
-| Method | Path | After 0.6.0 |
+| Method | Path | 0.7.0 |
 |---|---|---|
 | POST | batch-jobs | new: `client.create_batch_job`; body `{urls, extraction_config?, crawl_id?, entity_type?, fields?}`; 201; 403 `test_key_not_allowed`, 409 `concurrent_limit`, 413 `batch_too_large`, 422 for no URLs, 503 `dispatch_failed` |
 | GET | batch-jobs | new: `client.list_batch_jobs`; `page`, `page_size` (1-100) |
@@ -25,7 +25,7 @@ Not covered, by choice: `DELETE batch/{batch_job_id}`, `POST
 batch/url-import` and the event stream `GET
 batch-jobs/{batch_job_id}/stream`. There is no batch waiter.
 
-## Changed after 0.6.0
+## Changed in 0.7.0
 
 Checked against kobe-scraper 6bd19e9b (main, 12 November 2026). The route
 list in `tests/fixtures/routes.tsv` was then generated again from that commit
@@ -35,7 +35,7 @@ as `kernel/bootstrap.py` does). `tests/test_contract.py` calls every public
 method of the sync and the async client and fails on any request that is
 not in the list.
 
-| Method | Path | After 0.6.0 |
+| Method | Path | 0.7.0 |
 |---|---|---|
 | POST | nexus/execute | removed from the API (`modules/nexus/router.py`) and the SDK (`nexus.execute`) |
 | POST | nexus/knowledge | no longer called (`nexus.knowledge` removed): the body is now `{strategy_id, url, outcome}` and the route is left out of the public API reference (`scripts/generate_public_openapi.py` EXCLUDED). Still in the route list |

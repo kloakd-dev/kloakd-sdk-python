@@ -48,7 +48,7 @@ logger = logging.getLogger("kloakd.http")
 
 _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 _IDEMPOTENT_METHODS = {"GET", "HEAD", "DELETE"}
-_SDK_VERSION = "0.6.0"
+_SDK_VERSION = "0.7.0"
 _MAX_WAIT = 60.0
 
 

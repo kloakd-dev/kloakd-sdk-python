@@ -70,8 +70,8 @@ def test_requests_carry_the_user_agent_and_sdk_version(client: Kloakd) -> None:
     route = respx.get(f"{BASE}/skanyr/sites").mock(return_value=mock_response([]))  # type: ignore[arg-type]
     client.skanyr.list_sites()
     headers = route.calls.last.request.headers
-    assert headers["user-agent"] == "kloakd-sdk-python/0.6.0"
-    assert headers["x-kloakd-sdk"] == "python/0.6.0"
+    assert headers["user-agent"] == "kloakd-sdk-python/0.7.0"
+    assert headers["x-kloakd-sdk"] == "python/0.7.0"
 
 
 # ── 8. Retries ───────────────────────────────────────────────────────────────
@@ -553,8 +553,8 @@ def test_py_typed_ships_in_the_package() -> None:
     assert (Path(kloakd.__file__).parent / "py.typed").is_file()
     pyproject = (Path(__file__).parent.parent / "pyproject.toml").read_text()
     assert 'path = "kloakd/py.typed"' in pyproject
-    assert 'version = "0.6.0"' in pyproject
-    assert kloakd.__version__ == "0.6.0"
+    assert 'version = "0.7.0"' in pyproject
+    assert kloakd.__version__ == "0.7.0"
 
 
 def _signature(fn: Any) -> Dict[str, Any]:

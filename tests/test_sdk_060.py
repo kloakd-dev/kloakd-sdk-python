@@ -290,8 +290,8 @@ def test_409_is_not_retried(client: Kloakd, monkeypatch: pytest.MonkeyPatch) -> 
 
 
 @respx.mock
-def test_user_agent_is_060(client: Kloakd) -> None:
+def test_user_agent_is_the_package_version(client: Kloakd) -> None:
     route = respx.get(f"{BASE}/skanyr/sites").mock(return_value=mock_response([]))  # type: ignore[arg-type]
     client.skanyr.list_sites()
-    assert route.calls.last.request.headers["user-agent"] == "kloakd-sdk-python/0.6.0"
-    assert kloakd.__version__ == "0.6.0"
+    assert route.calls.last.request.headers["user-agent"] == "kloakd-sdk-python/0.7.0"
+    assert kloakd.__version__ == "0.7.0"

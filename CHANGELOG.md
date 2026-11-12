@@ -6,14 +6,14 @@ Format: [Semantic Versioning](https://semver.org/). Types: `Added`, `Changed`, `
 
 ---
 
-## [Unreleased]
+## [0.7.0] — 2026-11-12
 
 For the API at kobe-scraper 6bd19e9b (main, 12 November 2026); the batch
 and unified scrape methods and the route list are of
 integration/2026-11-12b (228857dc). **Breaking**:
 two methods and some attributes the API never filled are removed, and a
 crawl without `max_depth` or `max_pages` now runs to the plan's limits, so
-the next release is 0.7.0. `ROUTES.md` lists the routes.
+this release is 0.7.0. `ROUTES.md` lists the routes.
 
 ### Removed
 - `PageNode.status_code` and `PageNode.crawl_parent_url`: the pages listing
@@ -102,6 +102,7 @@ the next release is 0.7.0. `ROUTES.md` lists the routes.
   also covers the new methods.
 - Exports are streamed and read without a read timeout; an error status is
   raised (and retried) as for any GET before the body is handed on.
+- `User-Agent: kloakd-sdk-python/0.7.0`.
 
 ### Fixed
 - `skanyr.get_extraction_text` returns the body as it is. It was parsed as

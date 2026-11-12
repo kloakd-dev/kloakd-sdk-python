@@ -299,7 +299,7 @@ invalid CSS selector is refused by the API with 422 (`ApiError`).
 ## Crawl, extract and download
 
 One job crawls a site, extracts every page and keeps the rows for download
-(new after 0.6.0). The plan must include Kolektr, and a test key is refused
+(new in 0.7.0). The plan must include Kolektr, and a test key is refused
 (403).
 
 ```python

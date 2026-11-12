@@ -1,4 +1,4 @@
-"""After 0.6.0 (unreleased): the API on kobe-scraper integration/2026-11-12
+"""0.7.0: the API on kobe-scraper integration/2026-11-12
 (e5e358aa).
 
 Crawl-extract (modules/webgrph/crawl_extract_router.py): start, status,
