@@ -225,10 +225,15 @@ def _mapped(
     if status_code == 409 and code == "concurrent_limit":
         # kernel/gateway/dependencies.py hold_work_slot (tier limit) and
         # check_concurrent_quota (playground test keys). Never retried.
+        # The batch limit (kernel/jobs_runs_router.py
+        # _check_batch_concurrency) sends its count as active_batches.
+        active = detail_obj.get("active_crawls")
+        if active is None:
+            active = detail_obj.get("active_batches")
         return ConcurrencyLimitError(
             str(detail),
             concurrent_limit=_int_or_none(detail_obj.get("concurrent_limit")),
-            active_crawls=_int_or_none(detail_obj.get("active_crawls")),
+            active_crawls=_int_or_none(active),
             tier=detail_obj.get("tier"),
             active_requests=_int_or_none(detail_obj.get("active_requests")),
         )

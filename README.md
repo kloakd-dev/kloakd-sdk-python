@@ -442,9 +442,18 @@ if scrape.auth_required:
     # The URL is behind a login: nothing was scraped.
     # scrape.discovery_id names the auth-chain discovery.
     ...
+elif scrape.status == "failed":
+    # The scrape failed. success is still True and there is no error text;
+    # job_id names no stored job (get_unified_scrape would raise ApiError 404).
+    ...
 else:
     job = client.get_unified_scrape(scrape.job_id)  # status, level, progress, result, escalation_path
 ```
+
+Check `status`: when the scrape fails the API still answers with `success`
+true and `status` `"failed"`, without the error text, and that answer's
+`job_id` names no stored job, so `get_unified_scrape` on it raises
+`ApiError` 404.
 
 Arguments: `prompt`, `mode`, `schema`, `options`, `context`, `constraints`,
 `session_artifact_id` (a login session), and `poll_interval` /

@@ -428,6 +428,9 @@ def test_resume_at_the_running_batch_limit_is_a_concurrency_limit_error(
         client.resume_batch_job(BATCH)
     assert caught.value.code == "concurrent_limit"
     assert caught.value.concurrent_limit == 2
+    # detail.active_batches (kernel/jobs_runs_router.py _check_batch_concurrency)
+    assert caught.value.active_crawls == 2
+    assert caught.value.tier == "free"
 
 
 @respx.mock

@@ -171,7 +171,10 @@ class ConcurrencyLimitError(KloakdError):
 
     Attributes:
         concurrent_limit: The number of slots the plan has.
-        active_crawls: Crawls and batches running or queued (tier limit only).
+        active_crawls: Crawls and batches running or queued (tier limit
+            only). For the batch limit (``create_batch_job``,
+            ``resume_batch_job``) it is the API's ``active_batches``: the
+            batches pending or running.
         active_requests: Other calls in flight (tier limit only; new in 0.6.0).
         tier: The organisation's tier (tier limit only).
     """

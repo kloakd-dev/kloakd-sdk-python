@@ -523,7 +523,12 @@ class Kloakd:
         the API hands off as a job (202) is followed to its result, as
         ``evadr.fetch`` is. The answer names the job; read its state and
         data with ``get_unified_scrape``. When the URL is behind a login
-        the answer has ``auth_required`` true and nothing was scraped."""
+        the answer has ``auth_required`` true and nothing was scraped.
+
+        Check ``status``: when the scrape fails the API still answers with
+        ``success`` true and ``status`` ``"failed"``, without the error
+        text, and that answer's ``job_id`` names no stored job, so
+        ``get_unified_scrape`` on it raises ApiError 404."""
         raw = self._transport.post_following(
             "scraping/unified",
             unified_scrape_body(

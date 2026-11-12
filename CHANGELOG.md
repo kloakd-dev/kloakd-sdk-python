@@ -58,6 +58,9 @@ this release is 0.7.0. `ROUTES.md` lists the routes.
   (`POST scraping/unified`, a 202 hand-off is followed) and
   `get_unified_scrape(job_id)`. Models `UnifiedScrapeResult`,
   `UnifiedScrapeStatus`, `UnifiedScrapeProgress`, `UnifiedEscalation`.
+- `ConcurrencyLimitError.active_crawls` is also filled from the batch
+  limit's 409 (`create_batch_job`, `resume_batch_job`), which sends the
+  count as `active_batches`.
 - `NexusVerifyResult.status`, `risk_score`, `safety_checks`
   (`NexusSafetyCheck`), `verification_result_id`, `duration_ms`.
 - Crawls held for quota (sync and async). A crawl whose organization ran
