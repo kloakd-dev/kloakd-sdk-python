@@ -17,6 +17,15 @@ partial (``crawl.is_partial``; when ``crawl.resumable``,
 ``continue_crawl`` fetches the rest). ``wait_for_crawl(crawl_id)`` waits
 for a crawl by its id. See ``CrawlResult``.
 
+Estimate first, then start (the estimate is not metered)::
+
+    est = client.webgrph.estimate_crawl("https://example.com", max_depth=2)
+    print(est.est_pages, est.est_duration_s, est.est_gb, est.warning)
+    crawl = client.webgrph.crawl("https://example.com", est.max_depth, est.max_pages)
+
+A crawl maps the site's pages and links; crawl-extract also returns the
+items on each page as rows.
+
 Crawl, extract and download in one job (added after 0.6.0)::
 
     job = client.webgrph.crawl_extract(
@@ -52,8 +61,14 @@ from kloakd._download import (
 from kloakd.errors import JobFailedError, JobTimeoutError
 from kloakd.models import (
     CrawlContinueResult,
+    CrawlEstimate,
+    CrawlEstimatePages,
+    CrawlEstimatePlanLimits,
+    CrawlEstimateRange,
+    CrawlEstimateSite,
     CrawlEvent,
     CrawlExtractCancelResult,
+    CrawlExtractContinueResult,
     CrawlExtractCrawl,
     CrawlExtractJob,
     CrawlExtractPage,
@@ -191,6 +206,9 @@ def _result(
         error_code=status.get("error_code"),
         message=status.get("message"),
         held=held,
+        time_budget_s=_opt_int(status.get("time_budget_s")),
+        elapsed_s=_opt_float(status.get("elapsed_s")),
+        est_remaining_s=_opt_float(status.get("est_remaining_s")),
     )
 
 
@@ -231,12 +249,88 @@ def _continued(crawl_id: str) -> Callable[[Any], CrawlContinueResult]:
     return parse
 
 
-def _ops_continue(crawl_id: str) -> Op[CrawlContinueResult]:
+def _continue_body(
+    max_pages: Optional[int], max_depth: Optional[int]
+) -> Optional[Dict[str, Any]]:
+    """The continue body: ``{max_pages?, max_depth?}``, or None (no body at
+    all) when neither is given, so the API continues exactly as before."""
+    body = compact({"max_pages": max_pages, "max_depth": max_depth})
+    return body or None
+
+
+def _ops_continue(
+    crawl_id: str, max_pages: Optional[int] = None, max_depth: Optional[int] = None
+) -> Op[CrawlContinueResult]:
     return _Op(
         "POST",
         f"webgrph/crawl/{seg(crawl_id)}/continue",
-        {},
+        _continue_body(max_pages, max_depth),
         parse=_continued(crawl_id),
+    )
+
+
+def _opt_float(value: Any) -> Optional[float]:
+    return float(value) if value is not None else None
+
+
+def _estimate(url: str) -> Callable[[Any], CrawlEstimate]:
+    """A CrawlEstimate from ``POST webgrph/crawl/estimate`` or
+    ``webgrph/crawl-extract/estimate`` (the crawl-estimate contract of
+    14 November 2026, section 1)."""
+
+    def parse(body: Any) -> CrawlEstimate:
+        raw = as_dict(body)
+        limits = raw.get("plan_limits") or {}
+        site = raw.get("site") or {}
+        pages = raw.get("est_pages") or {}
+        duration = raw.get("est_duration_s") or {}
+        return CrawlEstimate(
+            mode=str(raw.get("mode") or ""),
+            url=str(raw.get("url") or url),
+            max_depth=int(raw.get("max_depth") or 0),
+            max_pages=int(raw.get("max_pages") or 0),
+            plan_limits=CrawlEstimatePlanLimits(
+                max_depth=_opt_int(limits.get("max_depth")),
+                max_pages=_opt_int(limits.get("max_pages")),
+                plan_tier=limits.get("plan_tier"),
+            ),
+            clamped=bool(raw.get("clamped", False)),
+            site=CrawlEstimateSite(
+                reachable=bool(site.get("reachable", False)),
+                sitemap_pages=_opt_int(site.get("sitemap_pages")),
+                homepage_links=_opt_int(site.get("homepage_links")),
+                probe_error=site.get("probe_error"),
+            ),
+            est_pages=CrawlEstimatePages(
+                low=int(pages.get("low") or 0),
+                high=int(pages.get("high") or 0),
+                source=str(pages.get("source") or ""),
+            ),
+            will_hit_page_cap=bool(raw.get("will_hit_page_cap", False)),
+            time_budget_s=int(raw.get("time_budget_s") or 0),
+            est_duration_s=CrawlEstimateRange(
+                low=float(duration.get("low") or 0),
+                high=float(duration.get("high") or 0),
+            ),
+            est_gb=float(raw.get("est_gb") or 0),
+            gb_remaining=_opt_float(raw.get("gb_remaining")),
+            will_exhaust_quota=bool(raw.get("will_exhaust_quota", False)),
+            warning=raw.get("warning"),
+            explanation=str(raw.get("explanation") or ""),
+            raw=raw,
+        )
+
+    return parse
+
+
+def _ops_estimate(
+    url: str, max_depth: Optional[int], max_pages: Optional[int]
+) -> Op[CrawlEstimate]:
+    return _Op(
+        "POST",
+        "webgrph/crawl/estimate",
+        compact({"url": url, "max_depth": max_depth, "max_pages": max_pages}),
+        parse=_estimate(url),
     )
 
 
@@ -370,6 +464,9 @@ def _ce_status(job_id: str) -> Callable[[Any], CrawlExtractStatus]:
             pages_by_method=raw.get("pages_by_method") or {},
             shapes=raw.get("shapes") or [],
             crawl=_ce_crawl(raw.get("crawl")),
+            time_budget_s=_opt_int(raw.get("time_budget_s")),
+            elapsed_s=_opt_float(raw.get("elapsed_s")),
+            est_remaining_s=_opt_float(raw.get("est_remaining_s")),
         )
 
     return parse
@@ -511,6 +608,51 @@ def _ops_ce_pages(
         f"{_CE}/{seg(job_id)}/pages",
         params=compact({"limit": limit, "offset": offset, "status": status}),
         parse=_ce_pages(job_id),
+    )
+
+
+def _ops_ce_estimate(
+    url: str,
+    max_depth: Optional[int],
+    max_pages: Optional[int],
+    extract: Optional[Dict[str, Any]],
+) -> Op[CrawlEstimate]:
+    return _Op(
+        "POST",
+        f"{_CE}/estimate",
+        compact(
+            {
+                "url": url,
+                "max_depth": max_depth,
+                "max_pages": max_pages,
+                "extract": extract,
+            }
+        ),
+        parse=_estimate(url),
+    )
+
+
+def _ce_continued(job_id: str) -> Callable[[Any], CrawlExtractContinueResult]:
+    def parse(body: Any) -> CrawlExtractContinueResult:
+        raw = as_dict(body)
+        return CrawlExtractContinueResult(
+            success=bool(raw.get("success", False)),
+            job_id=str(raw.get("job_id") or job_id),
+            crawl_id=str(raw.get("crawl_id") or ""),
+            status=str(raw.get("status") or ""),
+        )
+
+    return parse
+
+
+def _ops_ce_continue(
+    job_id: str, max_pages: Optional[int], max_depth: Optional[int]
+) -> Op[CrawlExtractContinueResult]:
+    return _Op(
+        "POST",
+        f"{_CE}/{seg(job_id)}/continue",
+        _continue_body(max_pages, max_depth),
+        parse=_ce_continued(job_id),
     )
 
 
@@ -683,12 +825,44 @@ class WebgrphNamespace:
             return ended
         return _result(status, url, self.crawl_all_pages(crawl_id))
 
-    def continue_crawl(self, crawl_id: str) -> CrawlContinueResult:
-        """Continue a crawl that ended partial at its time budget.
+    def estimate_crawl(
+        self,
+        url: str,
+        max_depth: Optional[int] = None,
+        max_pages: Optional[int] = None,
+    ) -> CrawlEstimate:
+        """What a crawl of ``url`` would do, before starting it: the depth
+        and page cap after the plan's limits, the pages the site seems to
+        have, the pages to fetch, a duration range, the data use against
+        what remains, any warning and a plain explanation. Not metered: no
+        charge and no work slot. Then start it with ``crawl`` (or adjust
+        ``max_depth``/``max_pages`` and estimate again)::
 
-        Only for a crawl that has ended and whose ``resumable`` is True.
-        The crawl goes back to ``queued`` on the same id and fetches the
-        pages it left, with a new time budget; pages already fetched are
+            est = client.webgrph.estimate_crawl(url, max_depth=2, max_pages=50)
+            print(est.est_pages.high, est.est_duration_s.high, est.warning)
+            crawl = client.webgrph.crawl(url, est.max_depth, est.max_pages)
+
+        A crawl maps the site's pages and links; ``estimate_crawl_extract``
+        is the estimate for a crawl-extract, which also returns the items on
+        each page as rows.
+
+        Raises:
+            RateLimitError: too many estimates for the organization.
+        """
+        return run(self._t, _ops_estimate(url, max_depth, max_pages))
+
+    def continue_crawl(
+        self,
+        crawl_id: str,
+        max_pages: Optional[int] = None,
+        max_depth: Optional[int] = None,
+    ) -> CrawlContinueResult:
+        """Continue a crawl that ended partial.
+
+        Only for a crawl that has ended and whose ``resumable`` is True, or
+        one that stopped at ``max_pages`` when a larger ``max_pages`` is
+        given. The crawl goes back to ``queued`` on the same id and fetches
+        the pages it left, with a new time budget; pages already fetched are
         not fetched again. Then wait by id again::
 
             crawl = client.webgrph.crawl(url)
@@ -696,13 +870,21 @@ class WebgrphNamespace:
                 client.webgrph.continue_crawl(crawl.crawl_id)
                 crawl = client.webgrph.wait_for_crawl(crawl.crawl_id, url=url)
 
+        Args:
+            crawl_id: The crawl.
+            max_pages, max_depth: New, higher limits (clamped to the plan).
+                With neither given no body is sent and the crawl continues
+                as before.
+
         Raises:
-            ApiError: 409 when the crawl is not one that stopped at its time
-                budget (an unknown crawl id included), has not ended, or is
-                already being continued. The quota checks of a new crawl
-                apply too (their errors are the ones ``crawl`` raises).
+            ApiError: 409 when the crawl cannot be continued (it has not
+                ended, is already being continued, an unknown crawl id, or
+                is not partial for a reason these options can lift); 422
+                (``continue_cannot_lower``) when a limit is lower than the
+                crawl's. The quota checks of a new crawl apply too (their
+                errors are the ones ``crawl`` raises).
         """
-        return run(self._t, _ops_continue(crawl_id))
+        return run(self._t, _ops_continue(crawl_id, max_pages, max_depth))
 
     def crawl_all(self, url: str, **kwargs: Any) -> List[PageNode]:
         """Every page node of a completed crawl (same options as ``crawl``).
@@ -844,6 +1026,41 @@ class WebgrphNamespace:
                 extract,
             ),
         )
+
+    def estimate_crawl_extract(
+        self,
+        url: str,
+        max_depth: Optional[int] = None,
+        max_pages: Optional[int] = None,
+        extract: Optional[Dict[str, Any]] = None,
+    ) -> CrawlEstimate:
+        """What a crawl-extract of ``url`` would do, before starting it (see
+        ``estimate_crawl``); the duration includes the extraction of each
+        page. Not metered. Then start it with ``crawl_extract``.
+
+        Raises:
+            ForbiddenError: the plan has no Kolektr (``module_not_entitled``).
+            RateLimitError: too many estimates for the organization.
+        """
+        return run(self._t, _ops_ce_estimate(url, max_depth, max_pages, extract))
+
+    def continue_crawl_extract(
+        self,
+        job_id: str,
+        max_pages: Optional[int] = None,
+        max_depth: Optional[int] = None,
+    ) -> CrawlExtractContinueResult:
+        """Continue a job whose crawl ended partial: the crawl fetches the
+        pages it left (up to the new, higher ``max_pages``/``max_depth``
+        when given) and the job then extracts the new pages. With neither
+        given no body is sent. Wait with ``wait_for_crawl_extract``.
+
+        Raises:
+            ApiError: 409 when the job cannot be continued, 422
+                (``continue_cannot_lower``) when a limit is lower than the
+                job's, 501 if the API does not support it yet.
+        """
+        return run(self._t, _ops_ce_continue(job_id, max_pages, max_depth))
 
     def get_crawl_extract(self, job_id: str) -> CrawlExtractStatus:
         """A job's state, progress and the row shapes found so far. An
@@ -1194,9 +1411,23 @@ class AsyncWebgrphNamespace:
             return ended
         return _result(status, url, await self.crawl_all_pages(crawl_id))
 
-    async def continue_crawl(self, crawl_id: str) -> CrawlContinueResult:
+    async def estimate_crawl(
+        self,
+        url: str,
+        max_depth: Optional[int] = None,
+        max_pages: Optional[int] = None,
+    ) -> CrawlEstimate:
+        """Async equivalent of WebgrphNamespace.estimate_crawl."""
+        return await arun(self._t, _ops_estimate(url, max_depth, max_pages))
+
+    async def continue_crawl(
+        self,
+        crawl_id: str,
+        max_pages: Optional[int] = None,
+        max_depth: Optional[int] = None,
+    ) -> CrawlContinueResult:
         """Async equivalent of WebgrphNamespace.continue_crawl."""
-        return await arun(self._t, _ops_continue(crawl_id))
+        return await arun(self._t, _ops_continue(crawl_id, max_pages, max_depth))
 
     async def crawl_all(self, url: str, **kwargs: Any) -> List[PageNode]:
         """Async equivalent of WebgrphNamespace.crawl_all: an empty list
@@ -1298,6 +1529,27 @@ class AsyncWebgrphNamespace:
                 extract,
             ),
         )
+
+    async def estimate_crawl_extract(
+        self,
+        url: str,
+        max_depth: Optional[int] = None,
+        max_pages: Optional[int] = None,
+        extract: Optional[Dict[str, Any]] = None,
+    ) -> CrawlEstimate:
+        """Async equivalent of WebgrphNamespace.estimate_crawl_extract."""
+        return await arun(
+            self._t, _ops_ce_estimate(url, max_depth, max_pages, extract)
+        )
+
+    async def continue_crawl_extract(
+        self,
+        job_id: str,
+        max_pages: Optional[int] = None,
+        max_depth: Optional[int] = None,
+    ) -> CrawlExtractContinueResult:
+        """Async equivalent of WebgrphNamespace.continue_crawl_extract."""
+        return await arun(self._t, _ops_ce_continue(job_id, max_pages, max_depth))
 
     async def get_crawl_extract(self, job_id: str) -> CrawlExtractStatus:
         """Async equivalent of WebgrphNamespace.get_crawl_extract."""

@@ -1,5 +1,22 @@
 # Routes the SDK calls (0.7.0)
 
+## Unreleased: crawl estimate and continue with options
+
+From the crawl-estimate contract of 14 November 2026
+(`CRAWL-ESTIMATE-CONTRACT.md`), which kobe-scraper
+feature/2026-11-14-crawl-estimate builds. Not yet checked against a backend
+commit: the three new routes were added to `tests/fixtures/routes.tsv` by
+hand (283 rows). Regenerate the list once that branch is merged.
+
+| Method | Path | Unreleased |
+|---|---|---|
+| POST | webgrph/crawl/estimate | new: `webgrph.estimate_crawl`; body `{url, max_depth?, max_pages?}`; returns `CrawlEstimate`. Not metered; rate-limited per organisation |
+| POST | webgrph/crawl-extract/estimate | new: `webgrph.estimate_crawl_extract`; body `{url, max_depth?, max_pages?, extract?}`; needs Kolektr (403) |
+| POST | webgrph/crawl/{crawl_id}/continue | `webgrph.continue_crawl` takes `max_pages` and `max_depth`; body `{max_pages?, max_depth?}`, and no body at all without them (0.7.0 sent `{}`). 422 `continue_cannot_lower`, 409 when it cannot be continued |
+| POST | webgrph/crawl-extract/{job_id}/continue | new: `webgrph.continue_crawl_extract`; same body; returns `CrawlExtractContinueResult` |
+| GET | webgrph/crawl/{crawl_id} | also read for `time_budget_s`, `elapsed_s`, `est_remaining_s` (`CrawlResult`) |
+| GET | webgrph/crawl-extract/{job_id} | also read for `time_budget_s`, `elapsed_s`, `est_remaining_s` at the top level of the body (`CrawlExtractStatus`) |
+
 ## Batch jobs and the unified scrape
 
 Checked against kobe-scraper integration/2026-11-12b (228857dc):

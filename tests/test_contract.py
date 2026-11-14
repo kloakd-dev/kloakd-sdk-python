@@ -27,6 +27,13 @@ remaining ``webgrph/analytics/*`` routes are gone.
 The list was generated again from integration/2026-11-12b (228857dc): the
 12 ``performance/...`` routes are gone (280 rows). The client's own methods
 (batch jobs, the unified scrape) are checked in tests/test_batch_unified.py.
+
+14 November 2026: three routes are added by hand from the crawl-estimate
+contract (CRAWL-ESTIMATE-CONTRACT.md, built in parallel on kobe-scraper
+feature/2026-11-14-crawl-estimate): ``POST webgrph/crawl/estimate``,
+``POST webgrph/crawl-extract/estimate`` and ``POST
+webgrph/crawl-extract/{job_id}/continue`` (283 rows). Regenerate the list
+from the backend once that branch is merged.
 """
 
 from __future__ import annotations
@@ -293,6 +300,15 @@ def test_the_deleted_methods_are_gone() -> None:
 NEW_METHODS = [
     ("webgrph", "continue_crawl", ("c-1",), "POST", "webgrph/crawl/c-1/continue"),
     ("webgrph", "wait_for_crawl", ("c-1",), "GET", "webgrph/crawl/c-1"),
+    ("webgrph", "estimate_crawl", ("https://s.test",), "POST", "webgrph/crawl/estimate"),
+    (
+        "webgrph", "estimate_crawl_extract", ("https://s.test",),
+        "POST", "webgrph/crawl-extract/estimate",
+    ),
+    (
+        "webgrph", "continue_crawl_extract", ("j-1",),
+        "POST", "webgrph/crawl-extract/j-1/continue",
+    ),
     (
         "fetchyr", "start_login_session", ("https://s.test",),
         "POST", "fetchyr/login-sessions",

@@ -875,9 +875,11 @@ def test_the_new_methods_call_live_routes() -> None:
     assert called == NEW_ROUTES
 
 
-def test_the_route_list_has_280_routes_and_no_performance_routes() -> None:
+def test_the_route_list_has_283_routes_and_no_performance_routes() -> None:
     # kobe-scraper integration/2026-11-12b (228857dc) removed its 12
     # performance/... routes; monitoring/performance is another route.
-    assert len(ROUTES) == 280
+    # 280 + the three crawl-estimate routes added by hand from the
+    # crawl-estimate contract (14 November 2026; see tests/test_contract.py).
+    assert len(ROUTES) == 283
     assert not _live("GET", f"{ORG_PREFIX}/performance/metrics")
     assert [p.pattern for _, p in ROUTES if "/performance/" in p.pattern] == []

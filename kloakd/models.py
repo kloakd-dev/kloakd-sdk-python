@@ -177,6 +177,13 @@ class CrawlResult:
     message: Optional[str] = None
     #: True when the crawl is paused for quota (status ``held_quota``).
     held: bool = False
+    #: The crawl's time budget in seconds; None until the crawl reports it.
+    time_budget_s: Optional[int] = None
+    #: Seconds the crawl has used so far; None until the crawl reports it.
+    elapsed_s: Optional[float] = None
+    #: Seconds of the budget the API expects the crawl still to need; None
+    #: until the crawl reports it.
+    est_remaining_s: Optional[float] = None
 
     @property
     def ok(self) -> bool:
@@ -191,6 +198,82 @@ class CrawlContinueResult:
     success: bool
     crawl_id: str
     status: str = ""
+
+
+@dataclass
+class CrawlEstimatePlanLimits:
+    """The plan's crawl caps the estimate was clamped to."""
+
+    max_depth: Optional[int] = None
+    max_pages: Optional[int] = None
+    plan_tier: Optional[str] = None
+
+
+@dataclass
+class CrawlEstimateSite:
+    """What a quick probe of the site found. ``sitemap_pages`` is None when
+    no sitemap was found and ``homepage_links`` (same-host links on the start
+    page) when the page was not fetched; ``probe_error`` says why a probe
+    failed."""
+
+    reachable: bool = False
+    sitemap_pages: Optional[int] = None
+    homepage_links: Optional[int] = None
+    probe_error: Optional[str] = None
+
+
+@dataclass
+class CrawlEstimatePages:
+    """Estimated pages to fetch. ``source`` is ``sitemap``,
+    ``homepage_links`` or ``limit`` (only the cap is known, e.g. the probe
+    failed)."""
+
+    low: int = 0
+    high: int = 0
+    source: str = ""
+
+
+@dataclass
+class CrawlEstimateRange:
+    """A low-high range in seconds."""
+
+    low: float = 0
+    high: float = 0
+
+
+@dataclass
+class CrawlEstimate:
+    """What a crawl or crawl-extract would do before it starts
+    (``webgrph.estimate_crawl`` / ``estimate_crawl_extract``). Not metered.
+
+    ``max_depth`` and ``max_pages`` are the values after clamping to the
+    plan (``clamped`` True when a requested value was lowered).
+    ``time_budget_s`` is the time budget the crawl will get;
+    ``est_duration_s`` the expected duration range. ``gb_remaining`` is None
+    when unknown. ``warning`` is a plain sentence when there is something to
+    warn about, and ``explanation`` says what the mode does."""
+
+    mode: str
+    url: str
+    max_depth: int = 0
+    max_pages: int = 0
+    plan_limits: CrawlEstimatePlanLimits = field(
+        default_factory=CrawlEstimatePlanLimits
+    )
+    clamped: bool = False
+    site: CrawlEstimateSite = field(default_factory=CrawlEstimateSite)
+    est_pages: CrawlEstimatePages = field(default_factory=CrawlEstimatePages)
+    #: True when the site seems larger than ``max_pages``.
+    will_hit_page_cap: bool = False
+    time_budget_s: int = 0
+    est_duration_s: CrawlEstimateRange = field(default_factory=CrawlEstimateRange)
+    est_gb: float = 0.0
+    gb_remaining: Optional[float] = None
+    will_exhaust_quota: bool = False
+    warning: Optional[str] = None
+    explanation: str = ""
+    #: The whole response body.
+    raw: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -300,6 +383,12 @@ class CrawlExtractStatus:
     shapes: List[Dict[str, Any]] = field(default_factory=list)
     #: What the job's crawl did; None when the API sent no crawl object.
     crawl: Optional[CrawlExtractCrawl] = None
+    #: The crawl's time budget in seconds; None until the crawl reports it.
+    time_budget_s: Optional[int] = None
+    #: Seconds the crawl has used so far; None until reported.
+    elapsed_s: Optional[float] = None
+    #: Seconds the API expects the crawl still to need; None until reported.
+    est_remaining_s: Optional[float] = None
 
     @property
     def finished(self) -> bool:
@@ -364,6 +453,17 @@ class CrawlExtractPagesResult:
     count: int = 0
     offset: int = 0
     pages: List[CrawlExtractPage] = field(default_factory=list)
+
+
+@dataclass
+class CrawlExtractContinueResult:
+    """The answer to ``webgrph.continue_crawl_extract``: the job's crawl was
+    queued again and its new pages will be extracted."""
+
+    success: bool
+    job_id: str
+    crawl_id: str = ""
+    status: str = ""
 
 
 @dataclass

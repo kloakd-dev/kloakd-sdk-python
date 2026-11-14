@@ -176,6 +176,38 @@ except ConcurrencyLimitError as e:
 
 ## Crawls and pages
 
+A crawl maps the site's pages and links; crawl-extract also returns the
+items on each page as rows.
+
+### Estimate, then start
+
+Before a crawl or crawl-extract, ask what it would do. The estimate is not
+metered (no charge, no work slot):
+
+```python
+est = client.webgrph.estimate_crawl("https://example.com", max_depth=2, max_pages=50)
+print(est.max_depth, est.max_pages, est.clamped)          # after the plan's limits
+print(est.site.sitemap_pages, est.est_pages.low, est.est_pages.high, est.est_pages.source)
+print(est.est_duration_s.low, est.est_duration_s.high, est.time_budget_s)
+print(est.est_gb, est.gb_remaining, est.warning)
+print(est.explanation)
+
+# Start with the values the estimate settled on, or adjust and estimate again
+crawl = client.webgrph.crawl("https://example.com", est.max_depth, est.max_pages)
+
+# The same for crawl-extract (needs Kolektr); the duration includes extraction
+est = client.webgrph.estimate_crawl_extract("https://example.com", max_pages=50,
+                                            extract={"fields": ["title", "price"]})
+```
+
+`est_pages.source` is `sitemap`, `homepage_links` or `limit` (only the cap
+is known, for example when the site probe failed). `will_hit_page_cap` is
+True when the site seems larger than `max_pages`, and `will_exhaust_quota`
+when the crawl may use up the data that remains.
+
+A running crawl reports `time_budget_s`, `elapsed_s` and `est_remaining_s`
+(`CrawlResult` and `CrawlExtractStatus`; None until the crawl reports them).
+
 ```python
 crawl = client.webgrph.crawl("https://example.com")   # waits, then loads every page
 if crawl.held:
@@ -257,6 +289,18 @@ left, with a new time budget; pages already fetched are not fetched again.
 The API answers 409 (`ApiError`) for a crawl that did not stop at its time
 budget (an unknown id included), has not ended, or is already being
 continued. Each of these fields is None when the API did not send it.
+
+Continue with more: give a higher `max_pages` (or `max_depth`), clamped to
+your plan. A crawl that stopped at `max_pages` can then continue too. A
+lower value raises `ApiError` 422 with `code == "continue_cannot_lower"`.
+Without options no body is sent and the crawl continues as before. A
+crawl-extract job continues the same way, and then extracts the new pages:
+
+```python
+client.webgrph.continue_crawl(crawl.crawl_id, max_pages=500)
+client.webgrph.continue_crawl_extract(job.job_id, max_pages=500)
+status = client.webgrph.wait_for_crawl_extract(job.job_id)
+```
 
 Extraction schemas are the shorthand `{"field": "css:selector"}` (the
 `css:` prefix is optional; a value may also be
