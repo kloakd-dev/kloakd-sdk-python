@@ -357,7 +357,8 @@ def test_continue_crawl_posts_to_the_crawl_and_reads_the_answer(
     assert client.webgrph.continue_crawl("c/1") == CrawlContinueResult(
         success=True, crawl_id="c/1", status="queued"
     )
-    assert route.call_count == 1 and _body(route) == {}
+    # No options: no body at all, as the API had before continue options
+    assert route.call_count == 1 and route.calls[-1].request.content == b""
 
 
 @respx.mock
@@ -397,7 +398,7 @@ async def test_async_continue_then_wait(aclient: AsyncKloakd) -> None:
     respx.get(f"{CRAWL}/c1/pages").mock(return_value=_pages([NODE]))
     again = await aclient.webgrph.continue_crawl("c1")
     assert (again.success, again.crawl_id, again.status) == (True, "c1", "queued")
-    assert _body(route) == {}
+    assert route.calls[-1].request.content == b""
     done = await aclient.webgrph.wait_for_crawl("c1", poll_interval=0.001)
     assert (done.is_partial, done.pages_unfetched, len(done.pages)) == (False, 0, 1)
     with pytest.raises(ApiError) as caught:

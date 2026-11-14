@@ -6,6 +6,33 @@ Format: [Semantic Versioning](https://semver.org/). Types: `Added`, `Changed`, `
 
 ---
 
+## [Unreleased]
+
+For the crawl-estimate contract of 14 November 2026 (kobe-scraper
+feature/2026-11-14-crawl-estimate, not yet merged). `ROUTES.md` lists the
+routes.
+
+### Added
+- `webgrph.estimate_crawl(url, max_depth=None, max_pages=None)` and
+  `webgrph.estimate_crawl_extract(url, max_depth=None, max_pages=None,
+  extract=None)` (sync and async): what a crawl or crawl-extract would do
+  before it starts, as a `CrawlEstimate` (clamped depth and pages, plan
+  limits, site probe, estimated pages, time budget, duration range, GB
+  against what remains, warning, explanation). Not metered.
+- `webgrph.continue_crawl(crawl_id, max_pages=None, max_depth=None)`: raise
+  a partial crawl's limits when continuing it. 422 `continue_cannot_lower`
+  for a lower value.
+- `webgrph.continue_crawl_extract(job_id, max_pages=None, max_depth=None)`
+  and `CrawlExtractContinueResult`.
+- `CrawlResult` and `CrawlExtractStatus` gain `time_budget_s`, `elapsed_s`
+  and `est_remaining_s` (None until the crawl reports them).
+
+### Changed
+- `continue_crawl(crawl_id)` without options sends no body (0.7.0 sent
+  `{}`); the API treats both as a plain continue.
+
+---
+
 ## [0.7.0] — 2026-11-12
 
 For the API at kobe-scraper 6bd19e9b (main, 12 November 2026); the batch
