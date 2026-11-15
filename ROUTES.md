@@ -6,8 +6,7 @@ From the cost-control contract of 15 November 2026
 (`COST-CONTROL-CONTRACT.md`), which kobe-scraper
 feature/2026-11-15-cost-control builds; the artifact shapes are those of
 the built backend. The three new routes were added to
-`tests/fixtures/routes.tsv` by hand (286 rows). Regenerate the list once
-that branch is merged.
+`tests/fixtures/routes.tsv` by hand (286 rows). Checked on 15 Nov against the route table of kobe-scraper feature/2026-11-15-cost-control at f6403fc5, generated with the module routers mounted as `kernel/bootstrap.py` does: it matches the 286 rows here except routes these lists have never carried (FastAPI's `/docs`, `/redoc`, `/openapi.json`, and the watcher and crawler health routes under `/api/v1/health/`, which take the watch token), so the list stands as the generated one.
 
 | Method | Path | Unreleased |
 |---|---|---|
@@ -28,7 +27,7 @@ From the crawl-estimate contract of 14 November 2026
 (`CRAWL-ESTIMATE-CONTRACT.md`), which kobe-scraper
 feature/2026-11-14-crawl-estimate builds. Not yet checked against a backend
 commit: the three new routes were added to `tests/fixtures/routes.tsv` by
-hand (283 rows). Regenerate the list once that branch is merged.
+hand (283 rows); checked with the cost-control rows, above.
 
 | Method | Path | Unreleased |
 |---|---|---|
