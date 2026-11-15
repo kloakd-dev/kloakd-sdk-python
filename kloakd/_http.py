@@ -33,6 +33,7 @@ from kloakd.errors import (
     AuthenticationError,
     BillingUnavailableError,
     ConcurrencyLimitError,
+    CostAcknowledgementRequiredError,
     ForbiddenError,
     JobTimeoutError,
     KloakdError,
@@ -236,6 +237,12 @@ def _mapped(
             active_crawls=_int_or_none(active),
             tier=detail_obj.get("tier"),
             active_requests=_int_or_none(detail_obj.get("active_requests")),
+        )
+    if status_code == 409 and code == "cost_acknowledgement_required":
+        # The cost-control contract of 15 November 2026, section 4: a
+        # dashboard session whose estimate needs consent. Never retried.
+        return CostAcknowledgementRequiredError(
+            f"KLOAKD API error 409: {detail}"
         )
     if status_code == 429:
         if code == "gb_exhausted":

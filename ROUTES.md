@@ -1,12 +1,33 @@
 # Routes the SDK calls (0.7.0)
 
+## Unreleased: cost control
+
+From the cost-control contract of 15 November 2026
+(`COST-CONTROL-CONTRACT.md`), which kobe-scraper
+feature/2026-11-15-cost-control builds; the artifact shapes are those of
+the built backend. The three new routes were added to
+`tests/fixtures/routes.tsv` by hand (286 rows). Checked on 15 Nov against the route table of kobe-scraper feature/2026-11-15-cost-control at f6403fc5, generated with the module routers mounted as `kernel/bootstrap.py` does: it matches the 286 rows here except routes these lists have never carried (FastAPI's `/docs`, `/redoc`, `/openapi.json`, and the watcher and crawler health routes under `/api/v1/health/`, which take the watch token), so the list stands as the generated one.
+
+| Method | Path | Unreleased |
+|---|---|---|
+| POST | webgrph/map | new: `webgrph.map_site`; body `{url, max_urls?}`; returns `SiteMap` (branches by path, up to 3 levels). Metered like a crawl |
+| GET | artifacts/{artifact_id} | new: `get_artifact`; returns `Artifact`. 404 "Artifact not found" (unknown, another org, session or cookie artifact, no HTML), 403, 422 for a non-UUID id |
+| GET | artifacts/{artifact_id}/content | new: `download_artifact`; the page's HTML as bytes (`text/html; charset=utf-8`, attachment `<host>-<id8>.html`) |
+| POST | webgrph/crawl, webgrph/crawl-extract | also send `include_resources?`, `max_data_mb?`, `estimate_id?`, `cost_acknowledged?` (only when True), `urls?`, `include_paths?`. 409 `cost_acknowledgement_required` → `CostAcknowledgementRequiredError` |
+| POST | webgrph/crawl/estimate, webgrph/crawl-extract/estimate | also send `include_resources?`; read `include_resources`, `data`, `share_of_remaining`, `consent_required`, `risks`, `suggested_max_data_mb`, `estimate_id` |
+| POST | webgrph/crawl/{crawl_id}/continue, webgrph/crawl-extract/{job_id}/continue | body also `max_data_mb?`; still no body without options |
+| GET | webgrph/crawl/{crawl_id}, webgrph/crawl-extract/{job_id} | also read `data_used_mb`, `max_data_mb`, `include_resources` (top level); `partial_reason` may be `data_limit` |
+| POST | evadr/fetch, evadr/fetch/async, kolektr/extract, kolektr/extract/html | also send `include_resources?` (`evadr.fetch`, `fetch_async`, `fetch_stream`, `kolektr.page`, `page_all`, `extract_html`) |
+| POST | webgrph/crawl/estimate, webgrph/crawl-extract/estimate | also send `capture_mode?`; read `include_resources_locked` (checked against kobe-scraper 964ba78c) |
+| POST | webgrph/crawl-extract/{job_id}/continue | 202 `{success, job_id, crawl_id, status, limits, links, time_budget_s?, elapsed_s?, max_data_mb?}`; 409 `not_continuable`, `already_continuing`, `continue_needs_more_pages`, `continue_needs_more_data`; 422 `continue_cannot_lower` |
+
 ## Unreleased: crawl estimate and continue with options
 
 From the crawl-estimate contract of 14 November 2026
 (`CRAWL-ESTIMATE-CONTRACT.md`), which kobe-scraper
 feature/2026-11-14-crawl-estimate builds. Not yet checked against a backend
 commit: the three new routes were added to `tests/fixtures/routes.tsv` by
-hand (283 rows). Regenerate the list once that branch is merged.
+hand (283 rows); checked with the cost-control rows, above.
 
 | Method | Path | Unreleased |
 |---|---|---|

@@ -33,7 +33,7 @@ An extraction still running after about 85 s is handed off as a job
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Union
 
 from kloakd.models import ExtractionResult, SchemaField, SchemaSpec
 from kloakd.modules._ops import as_dict, compact, seg
@@ -169,6 +169,8 @@ class KolektrNamespace:
         options: Optional[Dict[str, Any]] = None,
         level: Optional[str] = None,
         item_selector: Optional[str] = None,
+        *,
+        include_resources: Optional[Sequence[str]] = None,
     ) -> ExtractionResult:
         """
         Extract structured data from a URL.
@@ -214,6 +216,11 @@ class KolektrNamespace:
             level: Extraction level to force (the API chooses when omitted).
             item_selector: CSS selector for the repeated item (new in 0.6.0):
                 one record per match, fields read inside it. Needs ``schema``.
+            include_resources: The page extras to load (``images``, ``media``,
+                ``fonts``, ``stylesheets``, ``tracking``; keyword-only).
+                Extras are off by default on every browser route: left
+                out, none is loaded, only the page's document, scripts and
+                data.
 
         Returns:
             ExtractionResult with records, total_records, and artifact_id.
@@ -230,6 +237,8 @@ class KolektrNamespace:
             body["api_map_artifact_id"] = api_map_artifact_id
         if options:
             body["options"] = options
+        if include_resources is not None:
+            body["include_resources"] = list(include_resources)
 
         raw = self._t.post_following("kolektr/extract", body)
         return _parse_extraction(raw, url)
@@ -242,6 +251,8 @@ class KolektrNamespace:
         session_artifact_id: Optional[str] = None,
         api_map_artifact_id: Optional[str] = None,
         item_selector: Optional[str] = None,
+        *,
+        include_resources: Optional[Sequence[str]] = None,
     ) -> List[Dict[str, Any]]:
         """All records of a page's extraction (the API returns them in one response)."""
         return self.page(
@@ -251,6 +262,7 @@ class KolektrNamespace:
             session_artifact_id=session_artifact_id,
             api_map_artifact_id=api_map_artifact_id,
             item_selector=item_selector,
+            include_resources=include_resources,
         ).records
 
     def extract_html(
@@ -259,6 +271,8 @@ class KolektrNamespace:
         url: str,
         schema: Optional[SchemaInput] = None,
         item_selector: Optional[str] = None,
+        *,
+        include_resources: Optional[Sequence[str]] = None,
     ) -> ExtractionResult:
         """
         Extract structured data from raw HTML (in-process, no HTTP fetch).
@@ -269,12 +283,17 @@ class KolektrNamespace:
             schema: Shorthand dict, list of fields, or full schema_spec.
             item_selector: CSS selector for the repeated item (new in 0.6.0),
                 as for ``page``.
+            include_resources: The page extras to load (keyword-only), as
+                for ``page``: the API counts this as a browser route too.
+                None by default; sent only when given.
 
         Returns:
             ExtractionResult with records.
         """
         body: Dict[str, Any] = {"html": html, "url": url}
         _body_schema(body, schema, item_selector)
+        if include_resources is not None:
+            body["include_resources"] = list(include_resources)
 
         raw = self._t.post("kolektr/extract/html", body)
         return _parse_extraction(raw, url)
@@ -415,6 +434,8 @@ class AsyncKolektrNamespace:
         options: Optional[Dict[str, Any]] = None,
         level: Optional[str] = None,
         item_selector: Optional[str] = None,
+        *,
+        include_resources: Optional[Sequence[str]] = None,
     ) -> ExtractionResult:
         """Async equivalent of KolektrNamespace.page."""
         body: Dict[str, Any] = {"url": url}
@@ -429,6 +450,8 @@ class AsyncKolektrNamespace:
             body["api_map_artifact_id"] = api_map_artifact_id
         if options:
             body["options"] = options
+        if include_resources is not None:
+            body["include_resources"] = list(include_resources)
 
         raw = await self._t.post_following("kolektr/extract", body)
         return _parse_extraction(raw, url)
@@ -441,6 +464,8 @@ class AsyncKolektrNamespace:
         session_artifact_id: Optional[str] = None,
         api_map_artifact_id: Optional[str] = None,
         item_selector: Optional[str] = None,
+        *,
+        include_resources: Optional[Sequence[str]] = None,
     ) -> List[Dict[str, Any]]:
         """Async equivalent of KolektrNamespace.page_all."""
         result = await self.page(
@@ -450,6 +475,7 @@ class AsyncKolektrNamespace:
             session_artifact_id=session_artifact_id,
             api_map_artifact_id=api_map_artifact_id,
             item_selector=item_selector,
+            include_resources=include_resources,
         )
         return result.records
 
@@ -459,10 +485,14 @@ class AsyncKolektrNamespace:
         url: str,
         schema: Optional[SchemaInput] = None,
         item_selector: Optional[str] = None,
+        *,
+        include_resources: Optional[Sequence[str]] = None,
     ) -> ExtractionResult:
         """Async equivalent of KolektrNamespace.extract_html."""
         body: Dict[str, Any] = {"html": html, "url": url}
         _body_schema(body, schema, item_selector)
+        if include_resources is not None:
+            body["include_resources"] = list(include_resources)
 
         raw = await self._t.post("kolektr/extract/html", body)
         return _parse_extraction(raw, url)

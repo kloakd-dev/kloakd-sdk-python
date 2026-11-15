@@ -227,6 +227,28 @@ class ApiError(KloakdError):
         super().__init__(message, status_code=status_code)
 
 
+class CostAcknowledgementRequiredError(ApiError):
+    """
+    Raised for HTTP 409 ``cost_acknowledgement_required``: the crawl's or
+    crawl-extract's estimate needs consent (``consent_required``) and the
+    request did not carry a valid ``estimate_id`` with
+    ``cost_acknowledged=True``. Not retried.
+
+    The API refuses this to a dashboard session only; an API key is not
+    refused (the cost-control contract of 15 November 2026, section 4).
+    Estimate again and pass ``estimate_id=est.estimate_id`` and
+    ``cost_acknowledged=True`` to accept the estimate.
+
+    A subclass of ApiError (``status_code`` 409, ``code``
+    ``cost_acknowledgement_required``), so ``except ApiError`` still
+    catches it.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, status_code=409)
+        self.code = "cost_acknowledgement_required"
+
+
 class PaymentRequiredError(KloakdError):
     """
     Raised when a paid plan's last payment failed (HTTP 402

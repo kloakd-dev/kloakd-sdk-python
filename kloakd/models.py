@@ -138,7 +138,8 @@ class CrawlResult:
       Call ``wait_for_crawl(crawl_id)`` again later.
     * Partial (``is_partial`` True): the crawl stopped before asking for
       every page it found; ``partial_reason`` is ``time_budget``,
-      ``max_pages`` or ``error``. When ``resumable`` is True,
+      ``max_pages``, ``data_limit`` (it reached ``max_data_mb``) or
+      ``error``. When ``resumable`` is True,
       ``continue_crawl(crawl_id)`` fetches the rest.
     * Failed, cancelled or still running at the waiter's timeout:
       ``success`` False and ``error`` set.
@@ -164,7 +165,10 @@ class CrawlResult:
     #: queued, crawling, completed, failed, cancelled or held_quota.
     status: str = ""
     is_partial: Optional[bool] = None
-    #: time_budget, max_pages or error.
+    #: time_budget, max_pages, data_limit or error. ``data_limit``: the
+    #: crawl stopped at its ``max_data_mb`` ("Stopped at your data limit of
+    #: N MB. Continue with a higher limit to fetch more.");
+    #: ``continue_crawl(crawl_id, max_data_mb=...)`` with a higher limit.
     partial_reason: Optional[str] = None
     #: True when ``continue_crawl`` can fetch the pages this crawl left.
     resumable: Optional[bool] = None
@@ -184,6 +188,14 @@ class CrawlResult:
     #: Seconds of the budget the API expects the crawl still to need; None
     #: until the crawl reports it.
     est_remaining_s: Optional[float] = None
+    #: Megabytes the job has used so far; None until the API reports it.
+    data_used_mb: Optional[float] = None
+    #: The job's data limit in megabytes; None when it has none.
+    max_data_mb: Optional[float] = None
+    #: The page extras the job loads (``images``, ``media``, ``fonts``,
+    #: ``stylesheets``, ``tracking``); an empty list loads none (the
+    #: default). None when the API did not send it.
+    include_resources: Optional[List[str]] = None
 
     @property
     def ok(self) -> bool:
@@ -242,6 +254,40 @@ class CrawlEstimateRange:
 
 
 @dataclass
+class CrawlEstimateDataRange:
+    """A range of megabytes (or, for ``share_of_remaining``, a fraction of
+    the data that remains: 0.04 is 4%). ``low`` is None when the API sent
+    none (only ``total_mb`` has one)."""
+
+    typical: float = 0.0
+    high: float = 0.0
+    low: Optional[float] = None
+
+
+@dataclass
+class CrawlEstimateData:
+    """How much data the job is expected to use (the estimate's ``data``).
+
+    ``source`` says where the page weight came from: ``site_profile``
+    (measured pages of this site), ``root_page`` (the start page and what
+    it references) or ``typical`` (typical page weights).
+    ``total_mb_all_resources`` is the use with every extra loaded, and
+    ``saving_mb`` what leaving the extras out saves. The two maps are by
+    category: ``document``, ``script``, ``data``, ``images``, ``media``,
+    ``fonts``, ``stylesheets`` and ``tracking``."""
+
+    source: str = ""
+    per_page_mb: CrawlEstimateDataRange = field(default_factory=CrawlEstimateDataRange)
+    total_mb: CrawlEstimateDataRange = field(default_factory=CrawlEstimateDataRange)
+    total_mb_all_resources: CrawlEstimateDataRange = field(
+        default_factory=CrawlEstimateDataRange
+    )
+    saving_mb: CrawlEstimateDataRange = field(default_factory=CrawlEstimateDataRange)
+    by_category_mb_per_page: Dict[str, float] = field(default_factory=dict)
+    saving_by_category_mb: Dict[str, float] = field(default_factory=dict)
+
+
+@dataclass
 class CrawlEstimate:
     """What a crawl or crawl-extract would do before it starts
     (``webgrph.estimate_crawl`` / ``estimate_crawl_extract``). Not metered.
@@ -272,6 +318,27 @@ class CrawlEstimate:
     will_exhaust_quota: bool = False
     warning: Optional[str] = None
     explanation: str = ""
+    #: The extras the job will load: the ones asked for plus the locked
+    #: ones (an empty list is none).
+    include_resources: List[str] = field(default_factory=list)
+    #: Extras the job loads whatever is asked (``images`` and
+    #: ``stylesheets`` for ``capture_mode="visual"``); not offered as a
+    #: saving. None when the API did not send it (an older API).
+    include_resources_locked: Optional[List[str]] = None
+    #: The data use; None when the API sent none (an older API).
+    data: Optional[CrawlEstimateData] = None
+    #: The share of the data that remains, as a fraction; None when unknown.
+    share_of_remaining: Optional[CrawlEstimateDataRange] = None
+    #: True when the job needs ``cost_acknowledged=True`` with this
+    #: ``estimate_id`` (a dashboard session is refused 409 without it; an
+    #: API key is not).
+    consent_required: bool = False
+    #: Plain sentences about what can go wrong or cost more.
+    risks: List[str] = field(default_factory=list)
+    #: A data limit to start with (``total_mb.high``, rounded up).
+    suggested_max_data_mb: Optional[float] = None
+    #: The signed estimate token, valid 30 minutes; pass it to the job.
+    estimate_id: Optional[str] = None
     #: The whole response body.
     raw: Dict[str, Any] = field(default_factory=dict)
 
@@ -389,6 +456,14 @@ class CrawlExtractStatus:
     elapsed_s: Optional[float] = None
     #: Seconds the API expects the crawl still to need; None until reported.
     est_remaining_s: Optional[float] = None
+    #: Megabytes the job has used so far; None until the API reports it.
+    data_used_mb: Optional[float] = None
+    #: The job's data limit in megabytes; None when it has none.
+    max_data_mb: Optional[float] = None
+    #: The page extras the job loads (``images``, ``media``, ``fonts``,
+    #: ``stylesheets``, ``tracking``); an empty list loads none (the
+    #: default). None when the API did not send it.
+    include_resources: Optional[List[str]] = None
 
     @property
     def finished(self) -> bool:
@@ -457,13 +532,22 @@ class CrawlExtractPagesResult:
 
 @dataclass
 class CrawlExtractContinueResult:
-    """The answer to ``webgrph.continue_crawl_extract``: the job's crawl was
-    queued again and its new pages will be extracted."""
+    """The answer to ``webgrph.continue_crawl_extract`` (202): the job's
+    crawl was queued again and its new pages will be extracted.
+    ``max_pages`` and ``max_depth`` are the crawl's limits now (clamped to
+    the plan); ``time_budget_s``, ``elapsed_s`` and ``max_data_mb`` are
+    None when the API did not send them."""
 
     success: bool
     job_id: str
     crawl_id: str = ""
     status: str = ""
+    max_pages: Optional[int] = None
+    max_depth: Optional[int] = None
+    time_budget_s: Optional[int] = None
+    elapsed_s: Optional[float] = None
+    max_data_mb: Optional[float] = None
+    links: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -1092,3 +1176,53 @@ class UnifiedScrapeStatus:
     #: The job's stored result document; None until there is one.
     result: Optional[Dict[str, Any]] = None
     escalation_path: List[UnifiedEscalation] = field(default_factory=list)
+
+
+@dataclass
+class SiteMapBranch:
+    """One branch of a site map: the pages under ``path``. ``sample_urls``
+    are a few of them; ``children`` are the branches one path segment
+    deeper (up to 3 levels). A level holds at most 50 branches; the rest
+    are grouped into one named "other"."""
+
+    path: str
+    url_count: int = 0
+    sample_urls: List[str] = field(default_factory=list)
+    children: List[SiteMapBranch] = field(default_factory=list)
+
+
+@dataclass
+class SiteMap:
+    """The pages a site has, by branch (``webgrph.map_site``). ``source``
+    is ``sitemap``, ``links`` or ``both``; ``truncated`` is True when the
+    site has more than ``max_urls``. Choose branches, then crawl them with
+    ``include_paths`` (or single pages with ``urls``)."""
+
+    url: str
+    source: str = ""
+    total_urls: int = 0
+    truncated: bool = False
+    data_used_mb: float = 0.0
+    branches: List[SiteMapBranch] = field(default_factory=list)
+    #: The whole response body.
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class Artifact:
+    """A stored page from a fetch (``get_artifact``). ``type`` is
+    ``FETCHED_CONTENT`` or ``DEGRADED_FETCHED_CONTENT``. ``final_url`` (after
+    redirects) and ``status_code`` are None when unknown; ``verified`` is
+    True when the fetch was verified as the real page. ``content_url`` is
+    the API path of the page itself (``download_artifact``)."""
+
+    id: str
+    type: str = ""
+    url: Optional[str] = None
+    created_at: Optional[str] = None
+    size_bytes: Optional[int] = None
+    content_type: Optional[str] = None
+    final_url: Optional[str] = None
+    status_code: Optional[int] = None
+    verified: bool = False
+    content_url: Optional[str] = None

@@ -19,7 +19,16 @@ handed off as a job (HTTP 202); ``fetch`` follows it to its result.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, Iterator, List, Optional
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    AsyncIterator,
+    Dict,
+    Iterator,
+    List,
+    Optional,
+    Sequence,
+)
 
 from kloakd._handoff import DEFAULT_POLL_INTERVAL, DEFAULT_POLL_TIMEOUT, PollOptions
 from kloakd.models import AnalyzeResult, FetchEvent, FetchResult
@@ -35,8 +44,11 @@ def _fetch_body(
     use_proxy: bool,
     session_artifact_id: Optional[str],
     webhook_url: Optional[str] = None,
+    include_resources: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     body: Dict[str, Any] = {"url": url}
+    if include_resources is not None:
+        body["include_resources"] = list(include_resources)
     if force_browser:
         body["force_browser"] = True
     if use_proxy:
@@ -122,6 +134,8 @@ class EvadrNamespace:
         session_artifact_id: Optional[str] = None,
         poll_interval: float = DEFAULT_POLL_INTERVAL,
         poll_timeout: float = DEFAULT_POLL_TIMEOUT,
+        *,
+        include_resources: Optional[Sequence[str]] = None,
     ) -> FetchResult:
         """
         Fetch a URL with automatic anti-bot bypass.
@@ -131,10 +145,22 @@ class EvadrNamespace:
         seconds and then half as long again each time (up to 15 s), for at
         most ``poll_timeout`` seconds (then JobTimeoutError). A failed or
         expired job raises JobFailedError.
+
+        ``include_resources`` (keyword-only): the page extras a browser
+        fetch loads (``images``, ``media``, ``fonts``, ``stylesheets``,
+        ``tracking``). Extras are off by default on every browser route:
+        left out, none is loaded, only the page's document, scripts and
+        data. Sent only when given.
         """
         raw = self._t.post_following(
             "evadr/fetch",
-            _fetch_body(url, force_browser, use_proxy, session_artifact_id),
+            _fetch_body(
+                url,
+                force_browser,
+                use_proxy,
+                session_artifact_id,
+                include_resources=include_resources,
+            ),
             PollOptions(poll_interval, poll_timeout),
         )
         return _parse_fetch(raw, url)
@@ -146,12 +172,23 @@ class EvadrNamespace:
         use_proxy: bool = False,
         webhook_url: Optional[str] = None,
         session_artifact_id: Optional[str] = None,
+        *,
+        include_resources: Optional[Sequence[str]] = None,
     ) -> str:
-        """Start a fetch as a job; returns the job id (poll with get_job or wait_for_job)."""
+        """Start a fetch as a job; returns the job id (poll with get_job or
+        wait_for_job).
+
+        ``include_resources`` (keyword-only): the page extras to load, as
+        for ``fetch``; none by default."""
         raw = self._t.post(
             "evadr/fetch/async",
             _fetch_body(
-                url, force_browser, use_proxy, session_artifact_id, webhook_url
+                url,
+                force_browser,
+                use_proxy,
+                session_artifact_id,
+                webhook_url,
+                include_resources,
             ),
         )
         return str(raw["job_id"])
@@ -170,10 +207,17 @@ class EvadrNamespace:
         )
 
     def fetch_stream(
-        self, url: str, force_browser: bool = False
+        self,
+        url: str,
+        force_browser: bool = False,
+        *,
+        include_resources: Optional[Sequence[str]] = None,
     ) -> Iterator[FetchEvent]:
-        """Start a fetch as a job and yield its progress events."""
-        job_id = self.fetch_async(url, force_browser=force_browser)
+        """Start a fetch as a job and yield its progress events
+        (``include_resources`` as for ``fetch``)."""
+        job_id = self.fetch_async(
+            url, force_browser=force_browser, include_resources=include_resources
+        )
         for data in self.job_events(job_id):
             yield _event(data)
 
@@ -239,11 +283,19 @@ class AsyncEvadrNamespace:
         session_artifact_id: Optional[str] = None,
         poll_interval: float = DEFAULT_POLL_INTERVAL,
         poll_timeout: float = DEFAULT_POLL_TIMEOUT,
+        *,
+        include_resources: Optional[Sequence[str]] = None,
     ) -> FetchResult:
         """Async equivalent of EvadrNamespace.fetch (follows a 202 hand-off)."""
         raw = await self._t.post_following(
             "evadr/fetch",
-            _fetch_body(url, force_browser, use_proxy, session_artifact_id),
+            _fetch_body(
+                url,
+                force_browser,
+                use_proxy,
+                session_artifact_id,
+                include_resources=include_resources,
+            ),
             PollOptions(poll_interval, poll_timeout),
         )
         return _parse_fetch(raw, url)
@@ -255,12 +307,19 @@ class AsyncEvadrNamespace:
         use_proxy: bool = False,
         webhook_url: Optional[str] = None,
         session_artifact_id: Optional[str] = None,
+        *,
+        include_resources: Optional[Sequence[str]] = None,
     ) -> str:
         """Async equivalent of EvadrNamespace.fetch_async."""
         raw = await self._t.post(
             "evadr/fetch/async",
             _fetch_body(
-                url, force_browser, use_proxy, session_artifact_id, webhook_url
+                url,
+                force_browser,
+                use_proxy,
+                session_artifact_id,
+                webhook_url,
+                include_resources,
             ),
         )
         return str(raw["job_id"])
@@ -279,10 +338,17 @@ class AsyncEvadrNamespace:
         )
 
     async def fetch_stream(
-        self, url: str, force_browser: bool = False
+        self,
+        url: str,
+        force_browser: bool = False,
+        *,
+        include_resources: Optional[Sequence[str]] = None,
     ) -> AsyncIterator[FetchEvent]:
-        """Start a fetch as a job and yield its progress events."""
-        job_id = await self.fetch_async(url, force_browser=force_browser)
+        """Start a fetch as a job and yield its progress events
+        (``include_resources`` as for ``fetch``)."""
+        job_id = await self.fetch_async(
+            url, force_browser=force_browser, include_resources=include_resources
+        )
         async for data in self.job_events(job_id):
             yield _event(data)
 
