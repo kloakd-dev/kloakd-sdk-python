@@ -18,7 +18,9 @@ that branch is merged.
 | POST | webgrph/crawl/estimate, webgrph/crawl-extract/estimate | also send `include_resources?`; read `include_resources`, `data`, `share_of_remaining`, `consent_required`, `risks`, `suggested_max_data_mb`, `estimate_id` |
 | POST | webgrph/crawl/{crawl_id}/continue, webgrph/crawl-extract/{job_id}/continue | body also `max_data_mb?`; still no body without options |
 | GET | webgrph/crawl/{crawl_id}, webgrph/crawl-extract/{job_id} | also read `data_used_mb`, `max_data_mb`, `include_resources` (top level); `partial_reason` may be `data_limit` |
-| POST | evadr/fetch, kolektr/extract | also send `include_resources?` (`evadr.fetch`, `kolektr.page`, `kolektr.page_all`) |
+| POST | evadr/fetch, evadr/fetch/async, kolektr/extract, kolektr/extract/html | also send `include_resources?` (`evadr.fetch`, `fetch_async`, `fetch_stream`, `kolektr.page`, `page_all`, `extract_html`) |
+| POST | webgrph/crawl/estimate, webgrph/crawl-extract/estimate | also send `capture_mode?`; read `include_resources_locked` (checked against kobe-scraper 964ba78c) |
+| POST | webgrph/crawl-extract/{job_id}/continue | 202 `{success, job_id, crawl_id, status, limits, links, time_budget_s?, elapsed_s?, max_data_mb?}`; 409 `not_continuable`, `already_continuing`, `continue_needs_more_pages`, `continue_needs_more_data`; 422 `continue_cannot_lower` |
 
 ## Unreleased: crawl estimate and continue with options
 

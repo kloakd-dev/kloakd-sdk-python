@@ -172,12 +172,23 @@ class EvadrNamespace:
         use_proxy: bool = False,
         webhook_url: Optional[str] = None,
         session_artifact_id: Optional[str] = None,
+        *,
+        include_resources: Optional[Sequence[str]] = None,
     ) -> str:
-        """Start a fetch as a job; returns the job id (poll with get_job or wait_for_job)."""
+        """Start a fetch as a job; returns the job id (poll with get_job or
+        wait_for_job).
+
+        ``include_resources`` (keyword-only): the page extras to load, as
+        for ``fetch``; none by default."""
         raw = self._t.post(
             "evadr/fetch/async",
             _fetch_body(
-                url, force_browser, use_proxy, session_artifact_id, webhook_url
+                url,
+                force_browser,
+                use_proxy,
+                session_artifact_id,
+                webhook_url,
+                include_resources,
             ),
         )
         return str(raw["job_id"])
@@ -196,10 +207,17 @@ class EvadrNamespace:
         )
 
     def fetch_stream(
-        self, url: str, force_browser: bool = False
+        self,
+        url: str,
+        force_browser: bool = False,
+        *,
+        include_resources: Optional[Sequence[str]] = None,
     ) -> Iterator[FetchEvent]:
-        """Start a fetch as a job and yield its progress events."""
-        job_id = self.fetch_async(url, force_browser=force_browser)
+        """Start a fetch as a job and yield its progress events
+        (``include_resources`` as for ``fetch``)."""
+        job_id = self.fetch_async(
+            url, force_browser=force_browser, include_resources=include_resources
+        )
         for data in self.job_events(job_id):
             yield _event(data)
 
@@ -289,12 +307,19 @@ class AsyncEvadrNamespace:
         use_proxy: bool = False,
         webhook_url: Optional[str] = None,
         session_artifact_id: Optional[str] = None,
+        *,
+        include_resources: Optional[Sequence[str]] = None,
     ) -> str:
         """Async equivalent of EvadrNamespace.fetch_async."""
         raw = await self._t.post(
             "evadr/fetch/async",
             _fetch_body(
-                url, force_browser, use_proxy, session_artifact_id, webhook_url
+                url,
+                force_browser,
+                use_proxy,
+                session_artifact_id,
+                webhook_url,
+                include_resources,
             ),
         )
         return str(raw["job_id"])
@@ -313,10 +338,17 @@ class AsyncEvadrNamespace:
         )
 
     async def fetch_stream(
-        self, url: str, force_browser: bool = False
+        self,
+        url: str,
+        force_browser: bool = False,
+        *,
+        include_resources: Optional[Sequence[str]] = None,
     ) -> AsyncIterator[FetchEvent]:
-        """Start a fetch as a job and yield its progress events."""
-        job_id = await self.fetch_async(url, force_browser=force_browser)
+        """Start a fetch as a job and yield its progress events
+        (``include_resources`` as for ``fetch``)."""
+        job_id = await self.fetch_async(
+            url, force_browser=force_browser, include_resources=include_resources
+        )
         async for data in self.job_events(job_id):
             yield _event(data)
 

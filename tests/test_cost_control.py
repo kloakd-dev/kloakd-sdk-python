@@ -597,3 +597,103 @@ async def test_async_cost_control(aclient: AsyncKloakd) -> None:
     assert await aclient.download_artifact(ART_ID) == b"<html></html>"
     await aclient.evadr.fetch(URL, include_resources=["tracking"])
     assert _body(fetch) == {"url": URL, "include_resources": ["tracking"]}
+
+
+# ── Follow-up for the merged backend (kobe-scraper 964ba78c) ──
+
+
+@respx.mock
+def test_estimate_sends_capture_mode_and_reads_the_locked_extras(
+    client: Kloakd,
+) -> None:
+    crawl = respx.post(f"{CRAWL}/estimate").mock(
+        return_value=mock_response(
+            {**ESTIMATE, "include_resources": ["images", "stylesheets"],
+             "include_resources_locked": ["images", "stylesheets"]}
+        )
+    )
+    ce = respx.post(f"{CE}/estimate").mock(return_value=mock_response(ESTIMATE))
+    est = client.webgrph.estimate_crawl(URL, capture_mode="visual")
+    assert _body(crawl) == {"url": URL, "capture_mode": "visual"}
+    assert est.include_resources == ["images", "stylesheets"]
+    assert est.include_resources_locked == ["images", "stylesheets"]
+    # An older answer has no locked list.
+    older = client.webgrph.estimate_crawl_extract(URL, capture_mode="visual")
+    assert _body(ce) == {"url": URL, "capture_mode": "visual"}
+    assert older.include_resources_locked is None
+    client.webgrph.estimate_crawl(URL)
+    assert "capture_mode" not in _body(crawl)
+
+
+@respx.mock
+def test_fetch_async_stream_and_extract_html_send_include_resources(
+    client: Kloakd,
+) -> None:
+    route = respx.post(f"{BASE}/evadr/fetch/async").mock(
+        return_value=mock_response({"job_id": "f1"})
+    )
+    respx.get(f"{BASE}/evadr/jobs/f1/events").mock(
+        return_value=Response(
+            200, content=b"", headers={"Content-Type": "text/event-stream"}
+        )
+    )
+    html = respx.post(f"{BASE}/kolektr/extract/html").mock(
+        return_value=mock_response({"success": True, "url": URL, "records": []})
+    )
+    client.evadr.fetch_async(URL)
+    client.evadr.fetch_async(URL, include_resources=["images"])
+    list(client.evadr.fetch_stream(URL, include_resources=["fonts"]))
+    client.kolektr.extract_html("<html></html>", URL)
+    client.kolektr.extract_html("<html></html>", URL, include_resources=[])
+    assert _body(route, 0) == {"url": URL}
+    assert _body(route, 1) == {"url": URL, "include_resources": ["images"]}
+    assert _body(route, 2) == {"url": URL, "include_resources": ["fonts"]}
+    assert "include_resources" not in _body(html, 0)
+    assert _body(html, 1)["include_resources"] == []
+
+
+@respx.mock
+def test_continue_crawl_extract_reads_the_202_answer(client: Kloakd) -> None:
+    respx.post(f"{CE}/j1/continue").mock(
+        return_value=Response(
+            202,
+            json={
+                "success": True, "job_id": "j1", "crawl_id": "c1",
+                "status": "crawling",
+                "limits": {"max_pages": 500, "max_depth": 3},
+                "links": {"self": "/x"},
+                "time_budget_s": 900, "elapsed_s": 120.5, "max_data_mb": 80,
+            },
+        )
+    )
+    res = client.webgrph.continue_crawl_extract("j1", max_pages=500, max_data_mb=80)
+    assert (res.success, res.job_id, res.crawl_id, res.status) == (
+        True, "j1", "c1", "crawling",
+    )
+    assert (res.max_pages, res.max_depth) == (500, 3)
+    assert (res.time_budget_s, res.elapsed_s, res.max_data_mb) == (900, 120.5, 80.0)
+    assert res.links == {"self": "/x"}
+
+
+@pytest.mark.parametrize(
+    ("status", "code"),
+    [
+        (409, "continue_needs_more_pages"),
+        (409, "continue_needs_more_data"),
+        (409, "not_continuable"),
+        (409, "already_continuing"),
+        (422, "continue_cannot_lower"),
+    ],
+)
+@respx.mock
+def test_continue_crawl_extract_errors_carry_their_code(
+    client: Kloakd, status: int, code: str
+) -> None:
+    route = respx.post(f"{CE}/j1/continue").mock(
+        return_value=Response(status, json={"detail": {"error": code, "message": "m"}})
+    )
+    with pytest.raises(ApiError) as caught:
+        client.webgrph.continue_crawl_extract("j1", max_pages=10)
+    assert (caught.value.status_code, caught.value.code) == (status, code)
+    assert not isinstance(caught.value, CostAcknowledgementRequiredError)
+    assert route.call_count == 1

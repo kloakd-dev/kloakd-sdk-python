@@ -271,6 +271,8 @@ class KolektrNamespace:
         url: str,
         schema: Optional[SchemaInput] = None,
         item_selector: Optional[str] = None,
+        *,
+        include_resources: Optional[Sequence[str]] = None,
     ) -> ExtractionResult:
         """
         Extract structured data from raw HTML (in-process, no HTTP fetch).
@@ -281,12 +283,17 @@ class KolektrNamespace:
             schema: Shorthand dict, list of fields, or full schema_spec.
             item_selector: CSS selector for the repeated item (new in 0.6.0),
                 as for ``page``.
+            include_resources: The page extras to load (keyword-only), as
+                for ``page``: the API counts this as a browser route too.
+                None by default; sent only when given.
 
         Returns:
             ExtractionResult with records.
         """
         body: Dict[str, Any] = {"html": html, "url": url}
         _body_schema(body, schema, item_selector)
+        if include_resources is not None:
+            body["include_resources"] = list(include_resources)
 
         raw = self._t.post("kolektr/extract/html", body)
         return _parse_extraction(raw, url)
@@ -478,10 +485,14 @@ class AsyncKolektrNamespace:
         url: str,
         schema: Optional[SchemaInput] = None,
         item_selector: Optional[str] = None,
+        *,
+        include_resources: Optional[Sequence[str]] = None,
     ) -> ExtractionResult:
         """Async equivalent of KolektrNamespace.extract_html."""
         body: Dict[str, Any] = {"html": html, "url": url}
         _body_schema(body, schema, item_selector)
+        if include_resources is not None:
+            body["include_resources"] = list(include_resources)
 
         raw = await self._t.post("kolektr/extract/html", body)
         return _parse_extraction(raw, url)

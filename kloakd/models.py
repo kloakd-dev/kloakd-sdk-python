@@ -318,8 +318,13 @@ class CrawlEstimate:
     will_exhaust_quota: bool = False
     warning: Optional[str] = None
     explanation: str = ""
-    #: The extras the estimate is for (as sent; an empty list is none).
+    #: The extras the job will load: the ones asked for plus the locked
+    #: ones (an empty list is none).
     include_resources: List[str] = field(default_factory=list)
+    #: Extras the job loads whatever is asked (``images`` and
+    #: ``stylesheets`` for ``capture_mode="visual"``); not offered as a
+    #: saving. None when the API did not send it (an older API).
+    include_resources_locked: Optional[List[str]] = None
     #: The data use; None when the API sent none (an older API).
     data: Optional[CrawlEstimateData] = None
     #: The share of the data that remains, as a fraction; None when unknown.
@@ -527,13 +532,22 @@ class CrawlExtractPagesResult:
 
 @dataclass
 class CrawlExtractContinueResult:
-    """The answer to ``webgrph.continue_crawl_extract``: the job's crawl was
-    queued again and its new pages will be extracted."""
+    """The answer to ``webgrph.continue_crawl_extract`` (202): the job's
+    crawl was queued again and its new pages will be extracted.
+    ``max_pages`` and ``max_depth`` are the crawl's limits now (clamped to
+    the plan); ``time_budget_s``, ``elapsed_s`` and ``max_data_mb`` are
+    None when the API did not send them."""
 
     success: bool
     job_id: str
     crawl_id: str = ""
     status: str = ""
+    max_pages: Optional[int] = None
+    max_depth: Optional[int] = None
+    time_budget_s: Optional[int] = None
+    elapsed_s: Optional[float] = None
+    max_data_mb: Optional[float] = None
+    links: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

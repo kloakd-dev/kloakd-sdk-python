@@ -408,6 +408,7 @@ def _estimate(url: str) -> Callable[[Any], CrawlEstimate]:
             warning=raw.get("warning"),
             explanation=str(raw.get("explanation") or ""),
             include_resources=_opt_strs(raw.get("include_resources")) or [],
+            include_resources_locked=_opt_strs(raw.get("include_resources_locked")),
             data=_estimate_data(raw.get("data")),
             share_of_remaining=(
                 _range(raw["share_of_remaining"])
@@ -429,12 +430,20 @@ def _ops_estimate(
     max_depth: Optional[int],
     max_pages: Optional[int],
     include_resources: Optional[Sequence[str]] = None,
+    capture_mode: Optional[str] = None,
 ) -> Op[CrawlEstimate]:
     return _Op(
         "POST",
         "webgrph/crawl/estimate",
         {
-            **compact({"url": url, "max_depth": max_depth, "max_pages": max_pages}),
+            **compact(
+                {
+                    "url": url,
+                    "max_depth": max_depth,
+                    "max_pages": max_pages,
+                    "capture_mode": capture_mode,
+                }
+            ),
             **_cost_fields(include_resources),
         },
         parse=_estimate(url),
@@ -766,6 +775,7 @@ def _ops_ce_estimate(
     max_pages: Optional[int],
     extract: Optional[Dict[str, Any]],
     include_resources: Optional[Sequence[str]] = None,
+    capture_mode: Optional[str] = None,
 ) -> Op[CrawlEstimate]:
     return _Op(
         "POST",
@@ -776,6 +786,7 @@ def _ops_ce_estimate(
                 "max_depth": max_depth,
                 "max_pages": max_pages,
                 "extract": extract,
+                "capture_mode": capture_mode,
                 **_cost_fields(include_resources),
             }
         ),
@@ -786,11 +797,18 @@ def _ops_ce_estimate(
 def _ce_continued(job_id: str) -> Callable[[Any], CrawlExtractContinueResult]:
     def parse(body: Any) -> CrawlExtractContinueResult:
         raw = as_dict(body)
+        limits = raw.get("limits") or {}
         return CrawlExtractContinueResult(
             success=bool(raw.get("success", False)),
             job_id=str(raw.get("job_id") or job_id),
             crawl_id=str(raw.get("crawl_id") or ""),
             status=str(raw.get("status") or ""),
+            max_pages=_opt_int(limits.get("max_pages")),
+            max_depth=_opt_int(limits.get("max_depth")),
+            time_budget_s=_opt_int(raw.get("time_budget_s")),
+            elapsed_s=_opt_float(raw.get("elapsed_s")),
+            max_data_mb=_opt_float(raw.get("max_data_mb")),
+            links=raw.get("links") or {},
         )
 
     return parse
@@ -1039,6 +1057,7 @@ class WebgrphNamespace:
         max_depth: Optional[int] = None,
         max_pages: Optional[int] = None,
         include_resources: Optional[Sequence[str]] = None,
+        capture_mode: Optional[str] = None,
     ) -> CrawlEstimate:
         """What a crawl of ``url`` would do, before starting it: the depth
         and page cap after the plan's limits, the pages the site seems to
@@ -1055,8 +1074,12 @@ class WebgrphNamespace:
         is the estimate for a crawl-extract, which also returns the items on
         each page as rows.
 
-        ``include_resources`` (the extras to load; none by default) changes
-        the data estimate. The answer's ``data`` says how much data the
+        ``include_resources`` (the extras to load; none by default) and
+        ``capture_mode`` (as the crawl will be started; ``visual`` loads
+        images and stylesheets whatever is asked) change the data
+        estimate. The answer's ``include_resources`` is the set the job
+        will load and ``include_resources_locked`` the extras that cannot
+        be turned off. The answer's ``data`` says how much data the
         crawl may use (and what leaving the extras out saves),
         ``share_of_remaining`` what share of the data that remains that is,
         and ``risks`` what can go wrong. When ``consent_required`` is True,
@@ -1078,7 +1101,8 @@ class WebgrphNamespace:
             RateLimitError: too many estimates for the organization.
         """
         return run(
-            self._t, _ops_estimate(url, max_depth, max_pages, include_resources)
+            self._t,
+            _ops_estimate(url, max_depth, max_pages, include_resources, capture_mode),
         )
 
     def continue_crawl(
@@ -1112,9 +1136,11 @@ class WebgrphNamespace:
         Raises:
             ApiError: 409 when the crawl cannot be continued (it has not
                 ended, is already being continued, an unknown crawl id, or
-                is not partial for a reason these options can lift); 422
-                (``continue_cannot_lower``) when a limit is lower than the
-                crawl's. The quota checks of a new crawl apply too (their
+                is not partial for a reason these options can lift; codes
+                ``not_continuable``, ``already_continuing``,
+                ``continue_needs_more_pages``, ``continue_needs_more_data``);
+                422 (``continue_cannot_lower``) when a limit is lower than
+                the crawl's. The quota checks of a new crawl apply too (their
                 errors are the ones ``crawl`` raises).
         """
         return run(
@@ -1312,6 +1338,7 @@ class WebgrphNamespace:
         max_pages: Optional[int] = None,
         extract: Optional[Dict[str, Any]] = None,
         include_resources: Optional[Sequence[str]] = None,
+        capture_mode: Optional[str] = None,
     ) -> CrawlEstimate:
         """What a crawl-extract of ``url`` would do, before starting it (see
         ``estimate_crawl``); the duration includes the extraction of each
@@ -1325,7 +1352,9 @@ class WebgrphNamespace:
         """
         return run(
             self._t,
-            _ops_ce_estimate(url, max_depth, max_pages, extract, include_resources),
+            _ops_ce_estimate(
+                url, max_depth, max_pages, extract, include_resources, capture_mode
+            ),
         )
 
     def continue_crawl_extract(
@@ -1341,10 +1370,19 @@ class WebgrphNamespace:
         then extracts the new pages. With none given no body is sent. Wait
         with ``wait_for_crawl_extract``.
 
+        The API answers 202 with the crawl's new limits
+        (``CrawlExtractContinueResult``).
+
         Raises:
-            ApiError: 409 when the job cannot be continued, 422
-                (``continue_cannot_lower``) when a limit is lower than the
-                job's, 501 if the API does not support it yet.
+            ApiError: 409 ``not_continuable`` (the job has not ended
+                completed, or its crawl did not stop at its time budget,
+                page limit or data limit), ``already_continuing``,
+                ``continue_needs_more_pages`` (a crawl that stopped at
+                ``max_pages`` needs a larger one) or
+                ``continue_needs_more_data`` (one that stopped at its data
+                limit needs a higher ``max_data_mb``); 422
+                ``continue_cannot_lower`` when a limit is lower than the
+                job's. The code is on ``code``.
         """
         return run(
             self._t, _ops_ce_continue(job_id, max_pages, max_depth, max_data_mb)
@@ -1747,10 +1785,12 @@ class AsyncWebgrphNamespace:
         max_depth: Optional[int] = None,
         max_pages: Optional[int] = None,
         include_resources: Optional[Sequence[str]] = None,
+        capture_mode: Optional[str] = None,
     ) -> CrawlEstimate:
         """Async equivalent of WebgrphNamespace.estimate_crawl."""
         return await arun(
-            self._t, _ops_estimate(url, max_depth, max_pages, include_resources)
+            self._t,
+            _ops_estimate(url, max_depth, max_pages, include_resources, capture_mode),
         )
 
     async def continue_crawl(
@@ -1892,11 +1932,14 @@ class AsyncWebgrphNamespace:
         max_pages: Optional[int] = None,
         extract: Optional[Dict[str, Any]] = None,
         include_resources: Optional[Sequence[str]] = None,
+        capture_mode: Optional[str] = None,
     ) -> CrawlEstimate:
         """Async equivalent of WebgrphNamespace.estimate_crawl_extract."""
         return await arun(
             self._t,
-            _ops_ce_estimate(url, max_depth, max_pages, extract, include_resources),
+            _ops_ce_estimate(
+                url, max_depth, max_pages, extract, include_resources, capture_mode
+            ),
         )
 
     async def continue_crawl_extract(

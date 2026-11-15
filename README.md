@@ -216,8 +216,11 @@ are **off by default** on every browser route: only the page's document,
 scripts and data are loaded. Include any of them per job with
 `include_resources` (from `kloakd.RESOURCE_EXTRAS`). With
 `capture_mode="visual"` images and stylesheets are included automatically.
-`evadr.fetch`, `kolektr.page` and `kolektr.page_all` take
-`include_resources` too.
+`evadr.fetch`, `fetch_async`, `fetch_stream`, `kolektr.page`,
+`page_all` and `extract_html` take `include_resources` too. Estimate with
+the job's `capture_mode`: the answer's `include_resources` is the set the
+job will load, and `include_resources_locked` the extras it loads whatever
+you ask (`images` and `stylesheets` for `visual`).
 
 The estimate says how much data the job may use, what share of the data
 that remains that is, what leaving the extras out saves, and the risks.
@@ -363,6 +366,13 @@ client.webgrph.continue_crawl(crawl.crawl_id, max_pages=500)
 client.webgrph.continue_crawl_extract(job.job_id, max_pages=500)
 status = client.webgrph.wait_for_crawl_extract(job.job_id)
 ```
+
+The API answers 202 with the job's new limits (`max_pages`, `max_depth`,
+`max_data_mb`). Refusals carry their code on `ApiError.code`: 409
+`not_continuable`, `already_continuing`, `continue_needs_more_pages` (a
+crawl that stopped at `max_pages` needs a larger one),
+`continue_needs_more_data` (one that stopped at its data limit needs a
+higher `max_data_mb`), and 422 `continue_cannot_lower`.
 
 Extraction schemas are the shorthand `{"field": "css:selector"}` (the
 `css:` prefix is optional; a value may also be

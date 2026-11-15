@@ -48,6 +48,21 @@ browser route. The artifact shapes are those of the built backend.
   estimate needs consent, without `estimate_id` and
   `cost_acknowledged=True`. API keys are not refused.
 
+- Checked against the merged backend (kobe-scraper
+  feature/2026-11-15-cost-control @ 964ba78c):
+  - `CrawlEstimate.include_resources_locked`: the extras the job loads
+    whatever is asked (`capture_mode="visual"` locks images and
+    stylesheets; None from an older API). The answer's `include_resources`
+    is the set the job will load.
+  - `estimate_crawl` and `estimate_crawl_extract` take `capture_mode`.
+  - `evadr.fetch_async`, `evadr.fetch_stream` and `kolektr.extract_html`
+    take keyword-only `include_resources` (browser routes too).
+  - `continue_crawl_extract` is answered 202; `CrawlExtractContinueResult`
+    gains `max_pages`, `max_depth`, `time_budget_s`, `elapsed_s`,
+    `max_data_mb` and `links`. Its errors are documented: 409
+    `not_continuable`, `already_continuing`, `continue_needs_more_pages`,
+    `continue_needs_more_data`; 422 `continue_cannot_lower`.
+
 #### Not added
 - `by_proxy_type_bytes` of `GET activity/usage`: the SDK has no activity
   method.
