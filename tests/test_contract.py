@@ -34,6 +34,12 @@ feature/2026-11-14-crawl-estimate): ``POST webgrph/crawl/estimate``,
 ``POST webgrph/crawl-extract/estimate`` and ``POST
 webgrph/crawl-extract/{job_id}/continue`` (283 rows). Regenerate the list
 from the backend once that branch is merged.
+
+15 November 2026: three more by hand from the cost-control contract
+(COST-CONTROL-CONTRACT.md, kobe-scraper feature/2026-11-15-cost-control):
+``POST webgrph/map``, ``GET artifacts/{artifact_id}`` and ``GET
+artifacts/{artifact_id}/content`` (286 rows). Regenerate the list once that
+branch is merged.
 """
 
 from __future__ import annotations

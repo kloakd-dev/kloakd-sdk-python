@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from typing import Any, AsyncIterator, Dict, Iterator, List, Optional, Union
 
+from kloakd._artifacts import artifact_content_path, get_artifact_op
 from kloakd._batch import (
     batch_control_op,
     batch_job_results_op,
@@ -49,6 +50,7 @@ from kloakd.errors import (
     RateLimitError,
 )
 from kloakd.models import (
+    Artifact,
     BatchJob,
     BatchJobResults,
     BatchJobsPage,
@@ -551,6 +553,29 @@ class Kloakd:
         raises ApiError 404."""
         return run(self._transport, get_unified_scrape_op(job_id))
 
+    def get_artifact(self, artifact_id: str) -> Artifact:
+        """A fetch's stored page: its metadata (``GET artifacts/{id}``). Only
+        a fetched page of your organization (``type`` ``FETCHED_CONTENT`` or
+        ``DEGRADED_FETCHED_CONTENT``; a fetch's ``artifact_id``).
+
+        Raises:
+            ApiError: 404 ("Artifact not found") for an unknown id, another
+                organization's artifact, a session or cookie artifact, or
+                one with no HTML; 422 for an id that is not a UUID.
+            ForbiddenError: 403 for another organization.
+        """
+        return run(self._transport, get_artifact_op(artifact_id))
+
+    def download_artifact(self, artifact_id: str) -> bytes:
+        """The stored page itself, as bytes (``GET artifacts/{id}/content``):
+        the HTML as fetched (``text/html; charset=utf-8``, sent as an
+        attachment named ``<host>-<id8>.html``). Decode it with
+        ``.decode("utf-8")``. Do not render it unsandboxed: it is the
+        site's page, scripts included. Same errors as ``get_artifact``."""
+        return self._transport.request_bytes(
+            "GET", artifact_content_path(artifact_id)
+        )
+
     def _crawl_page(
         self,
         url: str,
@@ -902,6 +927,16 @@ class AsyncKloakd:
     async def get_unified_scrape(self, job_id: str) -> UnifiedScrapeStatus:
         """Async equivalent of Kloakd.get_unified_scrape."""
         return await arun(self._transport, get_unified_scrape_op(job_id))
+
+    async def get_artifact(self, artifact_id: str) -> Artifact:
+        """Async equivalent of Kloakd.get_artifact."""
+        return await arun(self._transport, get_artifact_op(artifact_id))
+
+    async def download_artifact(self, artifact_id: str) -> bytes:
+        """Async equivalent of Kloakd.download_artifact."""
+        return await self._transport.request_bytes(
+            "GET", artifact_content_path(artifact_id)
+        )
 
     async def _crawl_page(
         self,

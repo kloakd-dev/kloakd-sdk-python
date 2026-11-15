@@ -118,6 +118,7 @@ except KloakdError as e:
 | `NotEntitledError` | 403 | Plan doesn't include this module (`not_entitled`: `module`) or feature (`tier_access_denied`: `feature`, `current_tier`, `required_tier`). A subclass of `ForbiddenError` |
 | `ForbiddenError` | 403 | Any other 403: the key may not access this resource |
 | `ConcurrencyLimitError` | 409 | Every work slot of the organisation is in use (`concurrent_limit`, `active_crawls`, `active_requests`, `tier`); not retried. See *Work slots* |
+| `CostAcknowledgementRequiredError` | 409 | A dashboard session started a crawl or crawl-extract whose estimate needs consent without `estimate_id` and `cost_acknowledged=True` (`cost_acknowledgement_required`); an `ApiError`, not retried. API keys are not refused |
 | `QuotaExceededError` | 429 | GB allocation and top-ups used up (`gb_exhausted`; not retried) |
 | `RateLimitError` | 429 | Request rate exceeded (`retry_after`, `reset_at`; retried). With `quota_exhausted` true it is the playground quota (`quota_used`, `quota_limit`, `upgrade_url`), which does not reset and is not retried |
 | `UpstreamError` | 502 | Target site unreachable |
@@ -207,6 +208,67 @@ when the crawl may use up the data that remains.
 
 A running crawl reports `time_budget_s`, `elapsed_s` and `est_remaining_s`
 (`CrawlResult` and `CrawlExtractStatus`; None until the crawl reports them).
+
+### Page extras, the data limit and consent
+
+A page's extras (images, video and audio, fonts, stylesheets and tracking)
+are **off by default** on every browser route: only the page's document,
+scripts and data are loaded. Include any of them per job with
+`include_resources` (from `kloakd.RESOURCE_EXTRAS`). With
+`capture_mode="visual"` images and stylesheets are included automatically.
+`evadr.fetch`, `kolektr.page` and `kolektr.page_all` take
+`include_resources` too.
+
+The estimate says how much data the job may use, what share of the data
+that remains that is, what leaving the extras out saves, and the risks.
+When `consent_required` is True, pass its `estimate_id` with
+`cost_acknowledged=True`. A dashboard session is refused 409
+(`CostAcknowledgementRequiredError`) without them. A job started with an
+API key is not refused, so a program should check `consent_required`
+itself before it starts a large job.
+
+```python
+est = client.webgrph.estimate_crawl("https://example.com", max_pages=200,
+                                    include_resources=["images"])
+d = est.data                                   # None from an older API
+print(d.source, d.total_mb.typical, d.total_mb.high)      # megabytes
+print(d.saving_mb.typical, d.saving_by_category_mb)       # what the extras cost
+print(est.share_of_remaining, est.risks, est.consent_required)
+
+crawl = client.webgrph.crawl(
+    "https://example.com",
+    max_pages=200,
+    include_resources=["images"],
+    max_data_mb=est.suggested_max_data_mb,     # stop at this much data
+    estimate_id=est.estimate_id,
+    cost_acknowledged=est.consent_required,
+)
+print(crawl.data_used_mb, crawl.max_data_mb, crawl.include_resources)
+if crawl.partial_reason == "data_limit":       # kloakd.PARTIAL_DATA_LIMIT
+    client.webgrph.continue_crawl(crawl.crawl_id, max_data_mb=200)
+```
+
+At the limit no new page is started, pages in flight finish, and the job
+ends partial with `partial_reason == "data_limit"`. Without `max_data_mb`
+a job has no limit of its own.
+
+### Map first, then choose
+
+`map_site` reads robots.txt, the sitemaps and the start page's links (no
+other page fetches; metered like a crawl) and returns the pages by branch.
+Crawl the branches you want with `include_paths`, or single pages with
+`urls`:
+
+```python
+site = client.webgrph.map_site("https://example.com", max_urls=5000)
+print(site.source, site.total_urls, site.truncated, site.data_used_mb)
+for b in site.branches:                        # sorted by url_count, 3 levels
+    print(b.path, b.url_count, b.sample_urls[:2], [c.path for c in b.children])
+
+client.webgrph.crawl("https://example.com", include_paths=["/products/"])
+client.webgrph.crawl_extract("https://example.com",
+                             urls=["https://example.com/products/1"])   # one page
+```
 
 ```python
 crawl = client.webgrph.crawl("https://example.com")   # waits, then loads every page
@@ -424,6 +486,23 @@ The async client has the same methods: `await` the calls, `async for` over
 `iter_crawl_extract_results`, and
 `async with await client.webgrph.export_crawl_extract(job_id) as export:`
 with `export.aiter_bytes()`.
+
+## A fetch's stored page
+
+A fetch stores the page it got (its `artifact_id`). Read its metadata, or
+download the HTML:
+
+```python
+art = client.get_artifact(artifact_id)
+print(art.type, art.url, art.final_url, art.status_code, art.verified, art.size_bytes)
+html = client.download_artifact(artifact_id).decode("utf-8")   # bytes
+```
+
+`type` is `FETCHED_CONTENT` or `DEGRADED_FETCHED_CONTENT`. Only your
+organization's fetched pages are served: an unknown id, another
+organization's artifact, a session or cookie artifact, or one with no HTML
+raises `ApiError` 404 ("Artifact not found"); an id that is not a UUID,
+422. The page is the site's own HTML: do not render it unsandboxed.
 
 ## Batch jobs
 

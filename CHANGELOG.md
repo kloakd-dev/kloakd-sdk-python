@@ -8,6 +8,52 @@ Format: [Semantic Versioning](https://semver.org/). Types: `Added`, `Changed`, `
 
 ## [Unreleased]
 
+### Cost control (15 November 2026)
+
+For the cost-control contract of 15 November 2026 (kobe-scraper
+feature/2026-11-15-cost-control, not yet merged), sections 1-5 and 8, and
+the owner's decision of the same day that page extras are off on every
+browser route. The artifact shapes are those of the built backend.
+`ROUTES.md` lists the routes.
+
+#### Added
+- Page extras are off by default. `webgrph.start_crawl`, `crawl`,
+  `start_crawl_extract` and `crawl_extract` take keyword-only
+  `include_resources` (from `RESOURCE_EXTRAS`: `images`, `media`, `fonts`,
+  `stylesheets`, `tracking`), `max_data_mb`, `estimate_id`,
+  `cost_acknowledged` (sent only when True), `urls` and `include_paths`.
+  Each is sent only when given; old calls send the same body. With
+  `capture_mode="visual"` images and stylesheets are included automatically.
+- `evadr.fetch`, `kolektr.page` and `kolektr.page_all` take keyword-only
+  `include_resources`, sent only when given.
+- `continue_crawl` and `continue_crawl_extract` take `max_data_mb` (raise
+  the data limit of a job that stopped with `partial_reason ==
+  "data_limit"`, `PARTIAL_DATA_LIMIT`).
+- `estimate_crawl` and `estimate_crawl_extract` take `include_resources`.
+  `CrawlEstimate` gains `include_resources`, `data` (`CrawlEstimateData`:
+  source, per-page and total megabytes, the total with every extra, the
+  saving, and both by category; None from an older API),
+  `share_of_remaining`, `consent_required`, `risks`,
+  `suggested_max_data_mb` and `estimate_id`. Ranges are
+  `CrawlEstimateDataRange` (`typical`, `high`, `low` or None).
+- `CrawlResult` and `CrawlExtractStatus` gain `data_used_mb`,
+  `max_data_mb` and `include_resources` (None until reported).
+- `webgrph.map_site(url, max_urls=None)`: the site's pages by branch
+  before crawling (`SiteMap`, `SiteMapBranch`). Metered like a crawl.
+- `client.get_artifact(id)` (`Artifact`: id, type, url, created_at,
+  size_bytes, content_type, final_url, status_code, verified, content_url)
+  and `client.download_artifact(id)` (the stored page's HTML as bytes).
+- `CostAcknowledgementRequiredError` (an `ApiError`, 409
+  `cost_acknowledgement_required`): a dashboard session's job whose
+  estimate needs consent, without `estimate_id` and
+  `cost_acknowledged=True`. API keys are not refused.
+
+#### Not added
+- `by_proxy_type_bytes` of `GET activity/usage`: the SDK has no activity
+  method.
+
+### Crawl estimate (14 November 2026)
+
 For the crawl-estimate contract of 14 November 2026 (kobe-scraper
 feature/2026-11-14-crawl-estimate, not yet merged). `ROUTES.md` lists the
 routes.

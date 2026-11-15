@@ -1,5 +1,25 @@
 # Routes the SDK calls (0.7.0)
 
+## Unreleased: cost control
+
+From the cost-control contract of 15 November 2026
+(`COST-CONTROL-CONTRACT.md`), which kobe-scraper
+feature/2026-11-15-cost-control builds; the artifact shapes are those of
+the built backend. The three new routes were added to
+`tests/fixtures/routes.tsv` by hand (286 rows). Regenerate the list once
+that branch is merged.
+
+| Method | Path | Unreleased |
+|---|---|---|
+| POST | webgrph/map | new: `webgrph.map_site`; body `{url, max_urls?}`; returns `SiteMap` (branches by path, up to 3 levels). Metered like a crawl |
+| GET | artifacts/{artifact_id} | new: `get_artifact`; returns `Artifact`. 404 "Artifact not found" (unknown, another org, session or cookie artifact, no HTML), 403, 422 for a non-UUID id |
+| GET | artifacts/{artifact_id}/content | new: `download_artifact`; the page's HTML as bytes (`text/html; charset=utf-8`, attachment `<host>-<id8>.html`) |
+| POST | webgrph/crawl, webgrph/crawl-extract | also send `include_resources?`, `max_data_mb?`, `estimate_id?`, `cost_acknowledged?` (only when True), `urls?`, `include_paths?`. 409 `cost_acknowledgement_required` → `CostAcknowledgementRequiredError` |
+| POST | webgrph/crawl/estimate, webgrph/crawl-extract/estimate | also send `include_resources?`; read `include_resources`, `data`, `share_of_remaining`, `consent_required`, `risks`, `suggested_max_data_mb`, `estimate_id` |
+| POST | webgrph/crawl/{crawl_id}/continue, webgrph/crawl-extract/{job_id}/continue | body also `max_data_mb?`; still no body without options |
+| GET | webgrph/crawl/{crawl_id}, webgrph/crawl-extract/{job_id} | also read `data_used_mb`, `max_data_mb`, `include_resources` (top level); `partial_reason` may be `data_limit` |
+| POST | evadr/fetch, kolektr/extract | also send `include_resources?` (`evadr.fetch`, `kolektr.page`, `kolektr.page_all`) |
+
 ## Unreleased: crawl estimate and continue with options
 
 From the crawl-estimate contract of 14 November 2026

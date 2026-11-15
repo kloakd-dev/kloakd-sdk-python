@@ -39,6 +39,7 @@ from kloakd.errors import (
     AuthenticationError,
     BillingUnavailableError,
     ConcurrencyLimitError,
+    CostAcknowledgementRequiredError,
     ForbiddenError,
     JobFailedError,
     JobTimeoutError,
@@ -51,6 +52,7 @@ from kloakd.errors import (
 )
 from kloakd.models import (
     AnalyzeResult,
+    Artifact,
     BatchJob,
     BatchJobItem,
     BatchJobResults,
@@ -59,6 +61,8 @@ from kloakd.models import (
     ChatTurn,
     CrawlContinueResult,
     CrawlEstimate,
+    CrawlEstimateData,
+    CrawlEstimateDataRange,
     CrawlEstimatePages,
     CrawlEstimatePlanLimits,
     CrawlEstimateRange,
@@ -97,6 +101,8 @@ from kloakd.models import (
     SessionResult,
     SessionStatus,
     SiteCrawlResult,
+    SiteMap,
+    SiteMapBranch,
     UnifiedEscalation,
     UnifiedScrapeProgress,
     UnifiedScrapeResult,
@@ -105,6 +111,7 @@ from kloakd.models import (
     WorkflowResult,
 )
 from kloakd.modules.kolektr import schema_spec
+from kloakd.modules.webgrph import PARTIAL_DATA_LIMIT, RESOURCE_EXTRAS
 
 __version__ = "0.7.0"
 __all__ = [
@@ -117,6 +124,7 @@ __all__ = [
     "NotEntitledError",
     "ForbiddenError",
     "ConcurrencyLimitError",
+    "CostAcknowledgementRequiredError",
     "RateLimitError",
     "UpstreamError",
     "ApiError",
@@ -137,6 +145,11 @@ __all__ = [
     "CrawlEstimateSite",
     "CrawlEstimatePages",
     "CrawlEstimateRange",
+    "CrawlEstimateData",
+    "CrawlEstimateDataRange",
+    "SiteMap",
+    "SiteMapBranch",
+    "Artifact",
     "CrawlEvent",
     "PageNode",
     "CrawlExtractJob",
@@ -191,4 +204,6 @@ __all__ = [
     "SchemaField",
     "SchemaSpec",
     "schema_spec",
+    "RESOURCE_EXTRAS",
+    "PARTIAL_DATA_LIMIT",
 ]
