@@ -85,7 +85,17 @@ from kloakd.models import (
     SiteMap,
     SiteMapBranch,
 )
-from kloakd.modules._ops import Op, _Op, arun, as_dict, as_list, compact, run, seg
+from kloakd.modules._ops import (
+    Op,
+    _Op,
+    arun,
+    as_dict,
+    as_list,
+    compact,
+    run,
+    seg,
+    with_robots_ack,
+)
 
 if TYPE_CHECKING:
     from kloakd._http import _AsyncHttpTransport, _HttpTransport
@@ -127,8 +137,9 @@ def _crawl_body(
     scope: Optional[Dict[str, Any]],
     budget: Optional[Dict[str, Any]],
     cost: Optional[Dict[str, Any]] = None,
+    robots_acknowledged_hosts: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
-    return compact(
+    body = compact(
         {
             "url": url,
             "max_depth": max_depth,
@@ -142,6 +153,7 @@ def _crawl_body(
             **(cost or {}),
         }
     )
+    return with_robots_ack(body, robots_acknowledged_hosts)
 
 
 #: The page extras a job can load (kobe-scraper
@@ -300,14 +312,15 @@ def _continue_body(
     max_pages: Optional[int],
     max_depth: Optional[int],
     max_data_mb: Optional[float] = None,
+    robots_acknowledged_hosts: Optional[Sequence[str]] = None,
 ) -> Optional[Dict[str, Any]]:
-    """The continue body: ``{max_pages?, max_depth?, max_data_mb?}``, or
-    None (no body at all) when none is given, so the API continues exactly
-    as before."""
+    """The continue body: ``{max_pages?, max_depth?, max_data_mb?,
+    robots_acknowledged_hosts?}``, or None (no body at all) when none is
+    given, so the API continues exactly as before."""
     body = compact(
         {"max_pages": max_pages, "max_depth": max_depth, "max_data_mb": max_data_mb}
     )
-    return body or None
+    return with_robots_ack(body, robots_acknowledged_hosts) or None
 
 
 def _ops_continue(
@@ -315,11 +328,14 @@ def _ops_continue(
     max_pages: Optional[int] = None,
     max_depth: Optional[int] = None,
     max_data_mb: Optional[float] = None,
+    robots_acknowledged_hosts: Optional[Sequence[str]] = None,
 ) -> Op[CrawlContinueResult]:
     return _Op(
         "POST",
         f"webgrph/crawl/{seg(crawl_id)}/continue",
-        _continue_body(max_pages, max_depth, max_data_mb),
+        _continue_body(
+            max_pages, max_depth, max_data_mb, robots_acknowledged_hosts
+        ),
         parse=_continued(crawl_id),
     )
 
@@ -431,21 +447,25 @@ def _ops_estimate(
     max_pages: Optional[int],
     include_resources: Optional[Sequence[str]] = None,
     capture_mode: Optional[str] = None,
+    robots_acknowledged_hosts: Optional[Sequence[str]] = None,
 ) -> Op[CrawlEstimate]:
     return _Op(
         "POST",
         "webgrph/crawl/estimate",
-        {
-            **compact(
-                {
-                    "url": url,
-                    "max_depth": max_depth,
-                    "max_pages": max_pages,
-                    "capture_mode": capture_mode,
-                }
-            ),
-            **_cost_fields(include_resources),
-        },
+        with_robots_ack(
+            {
+                **compact(
+                    {
+                        "url": url,
+                        "max_depth": max_depth,
+                        "max_pages": max_pages,
+                        "capture_mode": capture_mode,
+                    }
+                ),
+                **_cost_fields(include_resources),
+            },
+            robots_acknowledged_hosts,
+        ),
         parse=_estimate(url),
     )
 
@@ -478,11 +498,17 @@ def _site_map(url: str) -> Callable[[Any], SiteMap]:
     return parse
 
 
-def _ops_map(url: str, max_urls: Optional[int]) -> Op[SiteMap]:
+def _ops_map(
+    url: str,
+    max_urls: Optional[int],
+    robots_acknowledged_hosts: Optional[Sequence[str]] = None,
+) -> Op[SiteMap]:
     return _Op(
         "POST",
         "webgrph/map",
-        compact({"url": url, "max_urls": max_urls}),
+        with_robots_ack(
+            compact({"url": url, "max_urls": max_urls}), robots_acknowledged_hosts
+        ),
         parse=_site_map(url),
     )
 
@@ -706,23 +732,27 @@ def _ops_ce_start(
     budget: Optional[Dict[str, Any]],
     extract: Optional[Dict[str, Any]],
     cost: Optional[Dict[str, Any]] = None,
+    robots_acknowledged_hosts: Optional[Sequence[str]] = None,
 ) -> Op[CrawlExtractJob]:
     return _Op(
         "POST",
         _CE,
-        compact(
-            {
-                "url": url,
-                "max_depth": max_depth,
-                "max_pages": max_pages,
-                "include_external_links": include_external_links,
-                "session_artifact_id": session_artifact_id,
-                "capture_mode": capture_mode,
-                "scope": scope,
-                "budget": budget,
-                "extract": extract,
-                **(cost or {}),
-            }
+        with_robots_ack(
+            compact(
+                {
+                    "url": url,
+                    "max_depth": max_depth,
+                    "max_pages": max_pages,
+                    "include_external_links": include_external_links,
+                    "session_artifact_id": session_artifact_id,
+                    "capture_mode": capture_mode,
+                    "scope": scope,
+                    "budget": budget,
+                    "extract": extract,
+                    **(cost or {}),
+                }
+            ),
+            robots_acknowledged_hosts,
         ),
         parse=_ce_job(url),
     )
@@ -776,19 +806,23 @@ def _ops_ce_estimate(
     extract: Optional[Dict[str, Any]],
     include_resources: Optional[Sequence[str]] = None,
     capture_mode: Optional[str] = None,
+    robots_acknowledged_hosts: Optional[Sequence[str]] = None,
 ) -> Op[CrawlEstimate]:
     return _Op(
         "POST",
         f"{_CE}/estimate",
-        compact(
-            {
-                "url": url,
-                "max_depth": max_depth,
-                "max_pages": max_pages,
-                "extract": extract,
-                "capture_mode": capture_mode,
-                **_cost_fields(include_resources),
-            }
+        with_robots_ack(
+            compact(
+                {
+                    "url": url,
+                    "max_depth": max_depth,
+                    "max_pages": max_pages,
+                    "extract": extract,
+                    "capture_mode": capture_mode,
+                    **_cost_fields(include_resources),
+                }
+            ),
+            robots_acknowledged_hosts,
         ),
         parse=_estimate(url),
     )
@@ -819,11 +853,14 @@ def _ops_ce_continue(
     max_pages: Optional[int],
     max_depth: Optional[int],
     max_data_mb: Optional[float] = None,
+    robots_acknowledged_hosts: Optional[Sequence[str]] = None,
 ) -> Op[CrawlExtractContinueResult]:
     return _Op(
         "POST",
         f"{_CE}/{seg(job_id)}/continue",
-        _continue_body(max_pages, max_depth, max_data_mb),
+        _continue_body(
+            max_pages, max_depth, max_data_mb, robots_acknowledged_hosts
+        ),
         parse=_ce_continued(job_id),
     )
 
@@ -885,6 +922,7 @@ class WebgrphNamespace:
         cost_acknowledged: bool = False,
         urls: Optional[Sequence[str]] = None,
         include_paths: Optional[Sequence[str]] = None,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> str:
         """Start a crawl (the API answers 202); returns its crawl id.
 
@@ -913,6 +951,16 @@ class WebgrphNamespace:
         * ``include_paths``: follow only links under these path prefixes
           (e.g. ``["/products/"]``, from ``map_site``); the root is always
           fetched.
+
+        ``robots_acknowledged_hosts`` (keyword-only): hosts whose robots.txt
+        stop you acknowledge for this request: the ``host`` of a
+        RobotsDisallowedError. Naming a host confirms you have the right to
+        access its content despite its robots.txt and accept responsibility
+        under the Terms; KLOAKD records it. It counts for this request only
+        (the crawl's pages on those hosts included). Sent only when given;
+        the same on every method of this namespace that takes it
+        (``crawl``, ``crawl_stream``, ``estimate_crawl``, ``continue_crawl``,
+        ``map_site``, ``reader_view`` and the crawl-extract methods).
         """
         raw = self._t.post(
             "webgrph/crawl",
@@ -934,6 +982,7 @@ class WebgrphNamespace:
                     urls,
                     include_paths,
                 ),
+                robots_acknowledged_hosts,
             ),
         )
         return str(raw.get("crawl_id") or "")
@@ -959,6 +1008,7 @@ class WebgrphNamespace:
         cost_acknowledged: bool = False,
         urls: Optional[Sequence[str]] = None,
         include_paths: Optional[Sequence[str]] = None,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> CrawlResult:
         """
         Crawl a site: start it, wait until it ends, and load every page
@@ -998,6 +1048,7 @@ class WebgrphNamespace:
             cost_acknowledged=cost_acknowledged,
             urls=urls,
             include_paths=include_paths,
+            robots_acknowledged_hosts=robots_acknowledged_hosts,
         )
         if not wait:
             return _result({"crawl_id": crawl_id, "status": "queued"}, url, [])
@@ -1058,6 +1109,8 @@ class WebgrphNamespace:
         max_pages: Optional[int] = None,
         include_resources: Optional[Sequence[str]] = None,
         capture_mode: Optional[str] = None,
+        *,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> CrawlEstimate:
         """What a crawl of ``url`` would do, before starting it: the depth
         and page cap after the plan's limits, the pages the site seems to
@@ -1102,7 +1155,14 @@ class WebgrphNamespace:
         """
         return run(
             self._t,
-            _ops_estimate(url, max_depth, max_pages, include_resources, capture_mode),
+            _ops_estimate(
+                url,
+                max_depth,
+                max_pages,
+                include_resources,
+                capture_mode,
+                robots_acknowledged_hosts,
+            ),
         )
 
     def continue_crawl(
@@ -1111,6 +1171,8 @@ class WebgrphNamespace:
         max_pages: Optional[int] = None,
         max_depth: Optional[int] = None,
         max_data_mb: Optional[float] = None,
+        *,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> CrawlContinueResult:
         """Continue a crawl that ended partial.
 
@@ -1144,10 +1206,18 @@ class WebgrphNamespace:
                 errors are the ones ``crawl`` raises).
         """
         return run(
-            self._t, _ops_continue(crawl_id, max_pages, max_depth, max_data_mb)
+            self._t, _ops_continue(
+                crawl_id, max_pages, max_depth, max_data_mb, robots_acknowledged_hosts
+            )
         )
 
-    def map_site(self, url: str, max_urls: Optional[int] = None) -> SiteMap:
+    def map_site(
+        self,
+        url: str,
+        max_urls: Optional[int] = None,
+        *,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
+    ) -> SiteMap:
         """The pages a site has, by branch, before crawling it: reads
         robots.txt, the sitemaps and the start page's links, and fetches no
         other page. Metered like a crawl (a small amount of data,
@@ -1166,7 +1236,7 @@ class WebgrphNamespace:
         "other". ``truncated`` is True when the site has more than
         ``max_urls``.
         """
-        return run(self._t, _ops_map(url, max_urls))
+        return run(self._t, _ops_map(url, max_urls, robots_acknowledged_hosts))
 
     def crawl_all(self, url: str, **kwargs: Any) -> List[PageNode]:
         """Every page node of a completed crawl (same options as ``crawl``).
@@ -1185,14 +1255,21 @@ class WebgrphNamespace:
         max_pages: Optional[int] = None,
         include_external_links: bool = False,
         session_artifact_id: Optional[str] = None,
+        *,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> Iterator[CrawlEvent]:
         """Start a crawl and yield its progress events (Server-Sent Events).
 
         The stream ends when the crawl is completed, failed, cancelled or
         held for quota. ``max_depth`` and ``max_pages`` are sent only when
-        given."""
+        given; ``robots_acknowledged_hosts`` as for ``start_crawl``."""
         crawl_id = self.start_crawl(
-            url, max_depth, max_pages, include_external_links, session_artifact_id
+            url,
+            max_depth,
+            max_pages,
+            include_external_links,
+            session_artifact_id,
+            robots_acknowledged_hosts=robots_acknowledged_hosts,
         )
         for data in self.crawl_events(crawl_id):
             yield _event(data, crawl_id)
@@ -1283,6 +1360,7 @@ class WebgrphNamespace:
         cost_acknowledged: bool = False,
         urls: Optional[Sequence[str]] = None,
         include_paths: Optional[Sequence[str]] = None,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> CrawlExtractJob:
         """Start a job that crawls a site and extracts every page it
         fetches (the API answers 202). Read it with ``get_crawl_extract``,
@@ -1328,6 +1406,7 @@ class WebgrphNamespace:
                     urls,
                     include_paths,
                 ),
+                robots_acknowledged_hosts,
             ),
         )
 
@@ -1339,6 +1418,8 @@ class WebgrphNamespace:
         extract: Optional[Dict[str, Any]] = None,
         include_resources: Optional[Sequence[str]] = None,
         capture_mode: Optional[str] = None,
+        *,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> CrawlEstimate:
         """What a crawl-extract of ``url`` would do, before starting it (see
         ``estimate_crawl``); the duration includes the extraction of each
@@ -1353,7 +1434,13 @@ class WebgrphNamespace:
         return run(
             self._t,
             _ops_ce_estimate(
-                url, max_depth, max_pages, extract, include_resources, capture_mode
+                url,
+                max_depth,
+                max_pages,
+                extract,
+                include_resources,
+                capture_mode,
+                robots_acknowledged_hosts,
             ),
         )
 
@@ -1363,6 +1450,8 @@ class WebgrphNamespace:
         max_pages: Optional[int] = None,
         max_depth: Optional[int] = None,
         max_data_mb: Optional[float] = None,
+        *,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> CrawlExtractContinueResult:
         """Continue a job whose crawl ended partial: the crawl fetches the
         pages it left (up to the new, higher ``max_pages``/``max_depth``
@@ -1385,7 +1474,9 @@ class WebgrphNamespace:
                 job's. The code is on ``code``.
         """
         return run(
-            self._t, _ops_ce_continue(job_id, max_pages, max_depth, max_data_mb)
+            self._t, _ops_ce_continue(
+                job_id, max_pages, max_depth, max_data_mb, robots_acknowledged_hosts
+            )
         )
 
     def get_crawl_extract(self, job_id: str) -> CrawlExtractStatus:
@@ -1439,6 +1530,7 @@ class WebgrphNamespace:
         cost_acknowledged: bool = False,
         urls: Optional[Sequence[str]] = None,
         include_paths: Optional[Sequence[str]] = None,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> CrawlExtractStatus:
         """Crawl a site and extract every page: start the job and wait until
         it ends; returns its last state (completed or cancelled), or the
@@ -1468,6 +1560,7 @@ class WebgrphNamespace:
             cost_acknowledged=cost_acknowledged,
             urls=urls,
             include_paths=include_paths,
+            robots_acknowledged_hosts=robots_acknowledged_hosts,
         )
         return _ce_ended(
             self.wait_for_crawl_extract(job.job_id, poll_interval, poll_timeout)
@@ -1598,18 +1691,23 @@ class WebgrphNamespace:
         url: str,
         crawl_id: Optional[str] = None,
         session_artifact_id: Optional[str] = None,
+        *,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> Dict[str, Any]:
         return run(
             self._t,
             _Op(
                 "POST",
                 "webgrph/reader-view",
-                compact(
-                    {
-                        "url": url,
-                        "crawl_id": crawl_id,
-                        "session_artifact_id": session_artifact_id,
-                    }
+                with_robots_ack(
+                    compact(
+                        {
+                            "url": url,
+                            "crawl_id": crawl_id,
+                            "session_artifact_id": session_artifact_id,
+                        }
+                    ),
+                    robots_acknowledged_hosts,
                 ),
             ),
         )
@@ -1687,6 +1785,7 @@ class AsyncWebgrphNamespace:
         cost_acknowledged: bool = False,
         urls: Optional[Sequence[str]] = None,
         include_paths: Optional[Sequence[str]] = None,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> str:
         raw = await self._t.post(
             "webgrph/crawl",
@@ -1708,6 +1807,7 @@ class AsyncWebgrphNamespace:
                     urls,
                     include_paths,
                 ),
+                robots_acknowledged_hosts,
             ),
         )
         return str(raw.get("crawl_id") or "")
@@ -1733,6 +1833,7 @@ class AsyncWebgrphNamespace:
         cost_acknowledged: bool = False,
         urls: Optional[Sequence[str]] = None,
         include_paths: Optional[Sequence[str]] = None,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> CrawlResult:
         """Async equivalent of WebgrphNamespace.crawl."""
         crawl_id = await self.start_crawl(
@@ -1751,6 +1852,7 @@ class AsyncWebgrphNamespace:
             cost_acknowledged=cost_acknowledged,
             urls=urls,
             include_paths=include_paths,
+            robots_acknowledged_hosts=robots_acknowledged_hosts,
         )
         if not wait:
             return _result({"crawl_id": crawl_id, "status": "queued"}, url, [])
@@ -1786,11 +1888,20 @@ class AsyncWebgrphNamespace:
         max_pages: Optional[int] = None,
         include_resources: Optional[Sequence[str]] = None,
         capture_mode: Optional[str] = None,
+        *,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> CrawlEstimate:
         """Async equivalent of WebgrphNamespace.estimate_crawl."""
         return await arun(
             self._t,
-            _ops_estimate(url, max_depth, max_pages, include_resources, capture_mode),
+            _ops_estimate(
+                url,
+                max_depth,
+                max_pages,
+                include_resources,
+                capture_mode,
+                robots_acknowledged_hosts,
+            ),
         )
 
     async def continue_crawl(
@@ -1799,15 +1910,25 @@ class AsyncWebgrphNamespace:
         max_pages: Optional[int] = None,
         max_depth: Optional[int] = None,
         max_data_mb: Optional[float] = None,
+        *,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> CrawlContinueResult:
         """Async equivalent of WebgrphNamespace.continue_crawl."""
         return await arun(
-            self._t, _ops_continue(crawl_id, max_pages, max_depth, max_data_mb)
+            self._t, _ops_continue(
+                crawl_id, max_pages, max_depth, max_data_mb, robots_acknowledged_hosts
+            )
         )
 
-    async def map_site(self, url: str, max_urls: Optional[int] = None) -> SiteMap:
+    async def map_site(
+        self,
+        url: str,
+        max_urls: Optional[int] = None,
+        *,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
+    ) -> SiteMap:
         """Async equivalent of WebgrphNamespace.map_site."""
-        return await arun(self._t, _ops_map(url, max_urls))
+        return await arun(self._t, _ops_map(url, max_urls, robots_acknowledged_hosts))
 
     async def crawl_all(self, url: str, **kwargs: Any) -> List[PageNode]:
         """Async equivalent of WebgrphNamespace.crawl_all: an empty list
@@ -1821,14 +1942,21 @@ class AsyncWebgrphNamespace:
         max_pages: Optional[int] = None,
         include_external_links: bool = False,
         session_artifact_id: Optional[str] = None,
+        *,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> AsyncIterator[CrawlEvent]:
         """Start a crawl and yield its progress events (Server-Sent Events).
 
         The stream ends when the crawl is completed, failed, cancelled or
         held for quota. ``max_depth`` and ``max_pages`` are sent only when
-        given."""
+        given; ``robots_acknowledged_hosts`` as for ``start_crawl``."""
         crawl_id = await self.start_crawl(
-            url, max_depth, max_pages, include_external_links, session_artifact_id
+            url,
+            max_depth,
+            max_pages,
+            include_external_links,
+            session_artifact_id,
+            robots_acknowledged_hosts=robots_acknowledged_hosts,
         )
         async for data in self.crawl_events(crawl_id):
             yield _event(data, crawl_id)
@@ -1900,6 +2028,7 @@ class AsyncWebgrphNamespace:
         cost_acknowledged: bool = False,
         urls: Optional[Sequence[str]] = None,
         include_paths: Optional[Sequence[str]] = None,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> CrawlExtractJob:
         """Async equivalent of WebgrphNamespace.start_crawl_extract."""
         return await arun(
@@ -1922,6 +2051,7 @@ class AsyncWebgrphNamespace:
                     urls,
                     include_paths,
                 ),
+                robots_acknowledged_hosts,
             ),
         )
 
@@ -1933,12 +2063,20 @@ class AsyncWebgrphNamespace:
         extract: Optional[Dict[str, Any]] = None,
         include_resources: Optional[Sequence[str]] = None,
         capture_mode: Optional[str] = None,
+        *,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> CrawlEstimate:
         """Async equivalent of WebgrphNamespace.estimate_crawl_extract."""
         return await arun(
             self._t,
             _ops_ce_estimate(
-                url, max_depth, max_pages, extract, include_resources, capture_mode
+                url,
+                max_depth,
+                max_pages,
+                extract,
+                include_resources,
+                capture_mode,
+                robots_acknowledged_hosts,
             ),
         )
 
@@ -1948,10 +2086,14 @@ class AsyncWebgrphNamespace:
         max_pages: Optional[int] = None,
         max_depth: Optional[int] = None,
         max_data_mb: Optional[float] = None,
+        *,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> CrawlExtractContinueResult:
         """Async equivalent of WebgrphNamespace.continue_crawl_extract."""
         return await arun(
-            self._t, _ops_ce_continue(job_id, max_pages, max_depth, max_data_mb)
+            self._t, _ops_ce_continue(
+                job_id, max_pages, max_depth, max_data_mb, robots_acknowledged_hosts
+            )
         )
 
     async def get_crawl_extract(self, job_id: str) -> CrawlExtractStatus:
@@ -1994,6 +2136,7 @@ class AsyncWebgrphNamespace:
         cost_acknowledged: bool = False,
         urls: Optional[Sequence[str]] = None,
         include_paths: Optional[Sequence[str]] = None,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> CrawlExtractStatus:
         """Async equivalent of WebgrphNamespace.crawl_extract."""
         job = await self.start_crawl_extract(
@@ -2012,6 +2155,7 @@ class AsyncWebgrphNamespace:
             cost_acknowledged=cost_acknowledged,
             urls=urls,
             include_paths=include_paths,
+            robots_acknowledged_hosts=robots_acknowledged_hosts,
         )
         return _ce_ended(
             await self.wait_for_crawl_extract(job.job_id, poll_interval, poll_timeout)
@@ -2117,18 +2261,23 @@ class AsyncWebgrphNamespace:
         url: str,
         crawl_id: Optional[str] = None,
         session_artifact_id: Optional[str] = None,
+        *,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> Dict[str, Any]:
         return await arun(
             self._t,
             _Op(
                 "POST",
                 "webgrph/reader-view",
-                compact(
-                    {
-                        "url": url,
-                        "crawl_id": crawl_id,
-                        "session_artifact_id": session_artifact_id,
-                    }
+                with_robots_ack(
+                    compact(
+                        {
+                            "url": url,
+                            "crawl_id": crawl_id,
+                            "session_artifact_id": session_artifact_id,
+                        }
+                    ),
+                    robots_acknowledged_hosts,
                 ),
             ),
         )

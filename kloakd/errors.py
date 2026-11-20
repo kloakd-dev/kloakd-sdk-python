@@ -283,6 +283,106 @@ class BillingUnavailableError(KloakdError):
         self.retry_after = retry_after
 
 
+class RobotsDisallowedError(KloakdError):
+    """
+    Raised when the site's robots.txt stopped the request (HTTP 409
+    ``ROBOTS_DISALLOWED``). Nothing was requested from the page. Not retried.
+
+    KLOAKD reads a site's robots.txt before it asks for a page and stops when
+    the file disallows the page (``reason`` ``disallowed``) or cannot be read
+    (``unreadable``: a 5xx, a timeout or a dropped connection from the site).
+    To go past the stop, call the same method again with the stopped host
+    named: ``robots_acknowledged_hosts=[e.host]``. By naming a host you
+    confirm you have the right to access its content despite its robots.txt
+    and accept responsibility for doing so under the Terms
+    (``terms_version``); KLOAKD records each acknowledgement. It counts for
+    that request and those hosts only: nothing is remembered. The SDK never
+    acknowledges on your behalf.
+
+    Attributes:
+        reason: ``disallowed`` or ``unreadable``.
+        host: The host to name in ``robots_acknowledged_hosts`` (lower case,
+            with its port when it is not the scheme's own).
+        rule: The robots.txt rule that stopped it (e.g. ``Disallow: /``), or
+            None (``unreadable``).
+        url: The page that was stopped.
+        redirected_from: The page asked for, when the stop is where it
+            redirected to; None otherwise.
+        terms_version: The Terms an acknowledgement is recorded under.
+        acknowledge_field: The request field that acknowledges the stop
+            (``robots_acknowledged_hosts``).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        reason: str = "",
+        host: str = "",
+        rule: Optional[str] = None,
+        url: Optional[str] = None,
+        redirected_from: Optional[str] = None,
+        terms_version: Optional[str] = None,
+        acknowledge_field: str = "robots_acknowledged_hosts",
+    ) -> None:
+        super().__init__(message, status_code=409, code="ROBOTS_DISALLOWED")
+        self.reason = reason
+        self.host = host
+        self.rule = rule
+        self.url = url
+        self.redirected_from = redirected_from
+        self.terms_version = terms_version
+        self.acknowledge_field = acknowledge_field
+
+    def __repr__(self) -> str:
+        return (
+            f"RobotsDisallowedError(reason={self.reason!r}, host={self.host!r}, "
+            f"rule={self.rule!r}, message={self.message!r})"
+        )
+
+
+class RobotsCheckUnavailableError(KloakdError):
+    """
+    Raised when KLOAKD could not read the site's robots.txt for a reason of
+    its own (HTTP 503 ``ROBOTS_CHECK_UNAVAILABLE``). Nothing was fetched and
+    there is nothing to acknowledge. Retried after ``retry_after`` seconds,
+    as ``billing_unavailable`` is; the subclass RobotsExitsRefusedError is not.
+
+    Attributes:
+        reason: Why, when the API says (``exits_refused``); None otherwise.
+        host: The site's host.
+        retry_after: Seconds to wait (the Retry-After header, else the body's
+            ``retry_after_s``, else 30).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        reason: Optional[str] = None,
+        host: str = "",
+        retry_after: float = 30.0,
+    ) -> None:
+        super().__init__(message, status_code=503, code="ROBOTS_CHECK_UNAVAILABLE")
+        self.reason = reason
+        self.host = host
+        self.retry_after = retry_after
+
+    def __repr__(self) -> str:
+        return (
+            f"{self.__class__.__name__}(reason={self.reason!r}, host={self.host!r}, "
+            f"retry_after={self.retry_after!r}, message={self.message!r})"
+        )
+
+
+class RobotsExitsRefusedError(RobotsCheckUnavailableError):
+    """
+    Raised when every one of KLOAKD's exits refused to open a connection to
+    the site, so its robots.txt could not be read (HTTP 503
+    ``ROBOTS_CHECK_UNAVAILABLE`` with ``reason`` ``exits_refused``). This is
+    not the site's answer and there is nothing to acknowledge. Not retried by
+    the SDK: the exits refuse the site, not the moment.
+    """
+
+
 class JobFailedError(KloakdError):
     """Raised when a job (a handed-off fetch, an async fetch or a crawl) ended as failed."""
 

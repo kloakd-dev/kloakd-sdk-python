@@ -48,6 +48,9 @@ from kloakd.errors import (
     PaymentRequiredError,
     QuotaExceededError,
     RateLimitError,
+    RobotsCheckUnavailableError,
+    RobotsDisallowedError,
+    RobotsExitsRefusedError,
     UpstreamError,
 )
 from kloakd.models import (
@@ -131,6 +134,9 @@ __all__ = [
     "PaymentRequiredError",
     "QuotaExceededError",
     "BillingUnavailableError",
+    "RobotsDisallowedError",
+    "RobotsCheckUnavailableError",
+    "RobotsExitsRefusedError",
     "JobFailedError",
     "JobTimeoutError",
     # Evadr models

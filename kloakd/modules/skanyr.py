@@ -18,9 +18,9 @@ sessions, reader view and detected APIs moved to ``webgrph``.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
 
-from kloakd.modules._ops import _Op, arun, as_list, compact, run, seg
+from kloakd.modules._ops import _Op, arun, as_list, compact, run, seg, with_robots_ack
 
 if TYPE_CHECKING:
     from kloakd._http import _AsyncHttpTransport, _HttpTransport
@@ -60,14 +60,23 @@ class SkanyrNamespace:
         site_id: str,
         urls: Optional[List[str]] = None,
         policy: Optional[str] = None,
+        *,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> Dict[str, Any]:
-        """Re-fetch a site's changed content (all of it, or the given URLs)."""
+        """Re-fetch a site's changed content (all of it, or the given URLs).
+
+        ``robots_acknowledged_hosts`` (keyword-only): hosts whose robots.txt
+        stop you acknowledge for this request (the ``host`` of a
+        RobotsDisallowedError); recorded by KLOAKD, this request only."""
         return run(
             self._t,
             _Op(
                 "POST",
                 "skanyr/sync",
-                compact({"site_id": site_id, "urls": urls, "policy": policy}),
+                with_robots_ack(
+                    compact({"site_id": site_id, "urls": urls, "policy": policy}),
+                    robots_acknowledged_hosts,
+                ),
             ),
         )
 
@@ -383,14 +392,23 @@ class AsyncSkanyrNamespace:
         site_id: str,
         urls: Optional[List[str]] = None,
         policy: Optional[str] = None,
+        *,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> Dict[str, Any]:
-        """Re-fetch a site's changed content (all of it, or the given URLs)."""
+        """Re-fetch a site's changed content (all of it, or the given URLs).
+
+        ``robots_acknowledged_hosts`` (keyword-only): hosts whose robots.txt
+        stop you acknowledge for this request (the ``host`` of a
+        RobotsDisallowedError); recorded by KLOAKD, this request only."""
         return await arun(
             self._t,
             _Op(
                 "POST",
                 "skanyr/sync",
-                compact({"site_id": site_id, "urls": urls, "policy": policy}),
+                with_robots_ack(
+                    compact({"site_id": site_id, "urls": urls, "policy": policy}),
+                    robots_acknowledged_hosts,
+                ),
             ),
         )
 

@@ -32,7 +32,7 @@ from typing import (
 
 from kloakd._handoff import DEFAULT_POLL_INTERVAL, DEFAULT_POLL_TIMEOUT, PollOptions
 from kloakd.models import AnalyzeResult, FetchEvent, FetchResult
-from kloakd.modules._ops import as_dict, as_list, seg
+from kloakd.modules._ops import as_dict, as_list, seg, with_robots_ack
 
 if TYPE_CHECKING:
     from kloakd._http import _AsyncHttpTransport, _HttpTransport
@@ -45,8 +45,10 @@ def _fetch_body(
     session_artifact_id: Optional[str],
     webhook_url: Optional[str] = None,
     include_resources: Optional[Sequence[str]] = None,
+    robots_acknowledged_hosts: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     body: Dict[str, Any] = {"url": url}
+    with_robots_ack(body, robots_acknowledged_hosts)
     if include_resources is not None:
         body["include_resources"] = list(include_resources)
     if force_browser:
@@ -136,6 +138,7 @@ class EvadrNamespace:
         poll_timeout: float = DEFAULT_POLL_TIMEOUT,
         *,
         include_resources: Optional[Sequence[str]] = None,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> FetchResult:
         """
         Fetch a URL with automatic anti-bot bypass.
@@ -151,6 +154,13 @@ class EvadrNamespace:
         ``tracking``). Extras are off by default on every browser route:
         left out, none is loaded, only the page's document, scripts and
         data. Sent only when given.
+
+        ``robots_acknowledged_hosts`` (keyword-only): hosts whose robots.txt
+        stop you acknowledge for this request (the ``host`` of a
+        RobotsDisallowedError). Naming a host confirms you have the right to
+        access its content despite its robots.txt and accept responsibility
+        under the Terms; KLOAKD records it. This request only; sent only
+        when given.
         """
         raw = self._t.post_following(
             "evadr/fetch",
@@ -160,6 +170,7 @@ class EvadrNamespace:
                 use_proxy,
                 session_artifact_id,
                 include_resources=include_resources,
+                robots_acknowledged_hosts=robots_acknowledged_hosts,
             ),
             PollOptions(poll_interval, poll_timeout),
         )
@@ -174,12 +185,13 @@ class EvadrNamespace:
         session_artifact_id: Optional[str] = None,
         *,
         include_resources: Optional[Sequence[str]] = None,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> str:
         """Start a fetch as a job; returns the job id (poll with get_job or
         wait_for_job).
 
-        ``include_resources`` (keyword-only): the page extras to load, as
-        for ``fetch``; none by default."""
+        ``include_resources`` and ``robots_acknowledged_hosts``
+        (keyword-only) as for ``fetch``."""
         raw = self._t.post(
             "evadr/fetch/async",
             _fetch_body(
@@ -189,6 +201,7 @@ class EvadrNamespace:
                 session_artifact_id,
                 webhook_url,
                 include_resources,
+                robots_acknowledged_hosts,
             ),
         )
         return str(raw["job_id"])
@@ -212,11 +225,16 @@ class EvadrNamespace:
         force_browser: bool = False,
         *,
         include_resources: Optional[Sequence[str]] = None,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> Iterator[FetchEvent]:
         """Start a fetch as a job and yield its progress events
-        (``include_resources`` as for ``fetch``)."""
+        (``include_resources`` and ``robots_acknowledged_hosts`` as for
+        ``fetch``)."""
         job_id = self.fetch_async(
-            url, force_browser=force_browser, include_resources=include_resources
+            url,
+            force_browser=force_browser,
+            include_resources=include_resources,
+            robots_acknowledged_hosts=robots_acknowledged_hosts,
         )
         for data in self.job_events(job_id):
             yield _event(data)
@@ -235,13 +253,21 @@ class EvadrNamespace:
             )
         )
 
-    def scan(self, url: str) -> Dict[str, Any]:
-        """Lightweight HTTP fetch and anti-bot analysis of a URL."""
-        return as_dict(self._t.post("evadr/scan", {"url": url}))
+    def scan(
+        self, url: str, *, robots_acknowledged_hosts: Optional[Sequence[str]] = None
+    ) -> Dict[str, Any]:
+        """Lightweight HTTP fetch and anti-bot analysis of a URL
+        (``robots_acknowledged_hosts`` as for ``fetch``)."""
+        body = with_robots_ack({"url": url}, robots_acknowledged_hosts)
+        return as_dict(self._t.post("evadr/scan", body))
 
-    def profile(self, url: str) -> Dict[str, Any]:
-        """The canonical site profile of a URL."""
-        return as_dict(self._t.post("evadr/profile", {"url": url}))
+    def profile(
+        self, url: str, *, robots_acknowledged_hosts: Optional[Sequence[str]] = None
+    ) -> Dict[str, Any]:
+        """The canonical site profile of a URL
+        (``robots_acknowledged_hosts`` as for ``fetch``)."""
+        body = with_robots_ack({"url": url}, robots_acknowledged_hosts)
+        return as_dict(self._t.post("evadr/profile", body))
 
     def get_job(self, job_id: str) -> Dict[str, Any]:
         """A fetch job's state: status, and result or error when finished."""
@@ -285,6 +311,7 @@ class AsyncEvadrNamespace:
         poll_timeout: float = DEFAULT_POLL_TIMEOUT,
         *,
         include_resources: Optional[Sequence[str]] = None,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> FetchResult:
         """Async equivalent of EvadrNamespace.fetch (follows a 202 hand-off)."""
         raw = await self._t.post_following(
@@ -295,6 +322,7 @@ class AsyncEvadrNamespace:
                 use_proxy,
                 session_artifact_id,
                 include_resources=include_resources,
+                robots_acknowledged_hosts=robots_acknowledged_hosts,
             ),
             PollOptions(poll_interval, poll_timeout),
         )
@@ -309,6 +337,7 @@ class AsyncEvadrNamespace:
         session_artifact_id: Optional[str] = None,
         *,
         include_resources: Optional[Sequence[str]] = None,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> str:
         """Async equivalent of EvadrNamespace.fetch_async."""
         raw = await self._t.post(
@@ -320,6 +349,7 @@ class AsyncEvadrNamespace:
                 session_artifact_id,
                 webhook_url,
                 include_resources,
+                robots_acknowledged_hosts,
             ),
         )
         return str(raw["job_id"])
@@ -343,11 +373,16 @@ class AsyncEvadrNamespace:
         force_browser: bool = False,
         *,
         include_resources: Optional[Sequence[str]] = None,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> AsyncIterator[FetchEvent]:
         """Start a fetch as a job and yield its progress events
-        (``include_resources`` as for ``fetch``)."""
+        (``include_resources`` and ``robots_acknowledged_hosts`` as for
+        ``fetch``)."""
         job_id = await self.fetch_async(
-            url, force_browser=force_browser, include_resources=include_resources
+            url,
+            force_browser=force_browser,
+            include_resources=include_resources,
+            robots_acknowledged_hosts=robots_acknowledged_hosts,
         )
         async for data in self.job_events(job_id):
             yield _event(data)
@@ -366,13 +401,19 @@ class AsyncEvadrNamespace:
             )
         )
 
-    async def scan(self, url: str) -> Dict[str, Any]:
+    async def scan(
+        self, url: str, *, robots_acknowledged_hosts: Optional[Sequence[str]] = None
+    ) -> Dict[str, Any]:
         """Async equivalent of EvadrNamespace.scan."""
-        return as_dict(await self._t.post("evadr/scan", {"url": url}))
+        body = with_robots_ack({"url": url}, robots_acknowledged_hosts)
+        return as_dict(await self._t.post("evadr/scan", body))
 
-    async def profile(self, url: str) -> Dict[str, Any]:
+    async def profile(
+        self, url: str, *, robots_acknowledged_hosts: Optional[Sequence[str]] = None
+    ) -> Dict[str, Any]:
         """Async equivalent of EvadrNamespace.profile."""
-        return as_dict(await self._t.post("evadr/profile", {"url": url}))
+        body = with_robots_ack({"url": url}, robots_acknowledged_hosts)
+        return as_dict(await self._t.post("evadr/profile", body))
 
     async def get_job(self, job_id: str) -> Dict[str, Any]:
         """Async equivalent of EvadrNamespace.get_job."""

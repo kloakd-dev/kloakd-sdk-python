@@ -36,7 +36,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Union
 
 from kloakd.models import ExtractionResult, SchemaField, SchemaSpec
-from kloakd.modules._ops import as_dict, compact, seg
+from kloakd.modules._ops import ROBOTS_ACK_FIELD, as_dict, compact, seg, with_robots_ack
 
 if TYPE_CHECKING:
     from kloakd._http import _AsyncHttpTransport, _HttpTransport
@@ -171,6 +171,7 @@ class KolektrNamespace:
         item_selector: Optional[str] = None,
         *,
         include_resources: Optional[Sequence[str]] = None,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> ExtractionResult:
         """
         Extract structured data from a URL.
@@ -221,6 +222,12 @@ class KolektrNamespace:
                 Extras are off by default on every browser route: left
                 out, none is loaded, only the page's document, scripts and
                 data.
+            robots_acknowledged_hosts: Hosts whose robots.txt stop you
+                acknowledge for this request (keyword-only): the ``host`` of a
+                RobotsDisallowedError. Naming a host confirms you have the
+                right to access its content despite its robots.txt and accept
+                responsibility under the Terms; KLOAKD records it. This
+                request only; sent only when given.
 
         Returns:
             ExtractionResult with records, total_records, and artifact_id.
@@ -239,6 +246,7 @@ class KolektrNamespace:
             body["options"] = options
         if include_resources is not None:
             body["include_resources"] = list(include_resources)
+        with_robots_ack(body, robots_acknowledged_hosts)
 
         raw = self._t.post_following("kolektr/extract", body)
         return _parse_extraction(raw, url)
@@ -253,6 +261,7 @@ class KolektrNamespace:
         item_selector: Optional[str] = None,
         *,
         include_resources: Optional[Sequence[str]] = None,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> List[Dict[str, Any]]:
         """All records of a page's extraction (the API returns them in one response)."""
         return self.page(
@@ -263,6 +272,7 @@ class KolektrNamespace:
             api_map_artifact_id=api_map_artifact_id,
             item_selector=item_selector,
             include_resources=include_resources,
+            robots_acknowledged_hosts=robots_acknowledged_hosts,
         ).records
 
     def extract_html(
@@ -328,14 +338,26 @@ class KolektrNamespace:
         api_endpoint: str,
         endpoint_hash: Optional[str] = None,
         max_records: Optional[int] = None,
+        *,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> Dict[str, Any]:
-        """Extract all data from a discovered API endpoint."""
+        """Extract all data from a discovered API endpoint.
+
+        ``robots_acknowledged_hosts`` (keyword-only) as for ``page``; this
+        route takes it as a query parameter, repeated once per host."""
         return as_dict(self._t.request(
             "POST",
             _api_data_path(api_endpoint, "/extract-all"),
             json_body={},
             params=compact(
-                {"endpoint_hash": endpoint_hash, "max_records": max_records}
+                {
+                    "endpoint_hash": endpoint_hash,
+                    "max_records": max_records,
+                    # A query parameter here, repeated once per host.
+                    ROBOTS_ACK_FIELD: list(robots_acknowledged_hosts)
+                    if robots_acknowledged_hosts
+                    else None,
+                }
             ),
         ))
 
@@ -436,6 +458,7 @@ class AsyncKolektrNamespace:
         item_selector: Optional[str] = None,
         *,
         include_resources: Optional[Sequence[str]] = None,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> ExtractionResult:
         """Async equivalent of KolektrNamespace.page."""
         body: Dict[str, Any] = {"url": url}
@@ -452,6 +475,7 @@ class AsyncKolektrNamespace:
             body["options"] = options
         if include_resources is not None:
             body["include_resources"] = list(include_resources)
+        with_robots_ack(body, robots_acknowledged_hosts)
 
         raw = await self._t.post_following("kolektr/extract", body)
         return _parse_extraction(raw, url)
@@ -466,6 +490,7 @@ class AsyncKolektrNamespace:
         item_selector: Optional[str] = None,
         *,
         include_resources: Optional[Sequence[str]] = None,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> List[Dict[str, Any]]:
         """Async equivalent of KolektrNamespace.page_all."""
         result = await self.page(
@@ -476,6 +501,7 @@ class AsyncKolektrNamespace:
             api_map_artifact_id=api_map_artifact_id,
             item_selector=item_selector,
             include_resources=include_resources,
+            robots_acknowledged_hosts=robots_acknowledged_hosts,
         )
         return result.records
 
@@ -525,6 +551,8 @@ class AsyncKolektrNamespace:
         api_endpoint: str,
         endpoint_hash: Optional[str] = None,
         max_records: Optional[int] = None,
+        *,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> Dict[str, Any]:
         """Async equivalent of KolektrNamespace.extract_all_api_data."""
         return as_dict(await self._t.request(
@@ -532,7 +560,14 @@ class AsyncKolektrNamespace:
             _api_data_path(api_endpoint, "/extract-all"),
             json_body={},
             params=compact(
-                {"endpoint_hash": endpoint_hash, "max_records": max_records}
+                {
+                    "endpoint_hash": endpoint_hash,
+                    "max_records": max_records,
+                    # A query parameter here, repeated once per host.
+                    ROBOTS_ACK_FIELD: list(robots_acknowledged_hosts)
+                    if robots_acknowledged_hosts
+                    else None,
+                }
             ),
         ))
 

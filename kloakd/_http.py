@@ -12,9 +12,14 @@ Retry policy:
       kernel/gateway/rate_limiter.py) does not reset and is not retried.
     - 503 ``billing_unavailable``: any method (nothing was started), after
       Retry-After.
+    - 503 ``ROBOTS_CHECK_UNAVAILABLE`` (KLOAKD could not read the site's
+      robots.txt): any method (nothing was fetched), after Retry-After;
+      except ``reason`` ``exits_refused`` (every exit refused the site),
+      which is never retried.
     - Other 5xx and network errors: GET, HEAD and DELETE only. A POST, PUT
       or PATCH may have done its work, so it is never repeated.
-    - Never: 400, 401, 402, 403, 404, 409, 422, 429 ``gb_exhausted``.
+    - Never: 400, 401, 402, 403, 404, 409 (``ROBOTS_DISALLOWED`` included:
+      only the caller may acknowledge it), 422, 429 ``gb_exhausted``.
     - Otherwise exponential backoff (1s * 2^attempt); every wait capped at 60s.
     - Attempts: ``max_retries`` (default 3).
 """
@@ -41,6 +46,9 @@ from kloakd.errors import (
     PaymentRequiredError,
     QuotaExceededError,
     RateLimitError,
+    RobotsCheckUnavailableError,
+    RobotsDisallowedError,
+    RobotsExitsRefusedError,
     UpstreamError,
 )
 from kloakd.modules._ops import seg
@@ -244,6 +252,21 @@ def _mapped(
         return CostAcknowledgementRequiredError(
             f"KLOAKD API error 409: {detail}"
         )
+    if status_code == 409 and code == "ROBOTS_DISALLOWED":
+        # kobe-scraper core/compliance/robots.py stop_detail. Never retried:
+        # only the caller may acknowledge (robots_acknowledged_hosts).
+        return RobotsDisallowedError(
+            str(detail),
+            reason=str(detail_obj.get("reason") or ""),
+            host=str(detail_obj.get("host") or ""),
+            rule=detail_obj.get("rule"),
+            url=detail_obj.get("url"),
+            redirected_from=detail_obj.get("redirected_from"),
+            terms_version=detail_obj.get("terms_version"),
+            acknowledge_field=str(
+                detail_obj.get("acknowledge_field") or "robots_acknowledged_hosts"
+            ),
+        )
     if status_code == 429:
         if code == "gb_exhausted":
             return QuotaExceededError(
@@ -278,6 +301,26 @@ def _mapped(
         return BillingUnavailableError(
             str(detail), retry_after=retry_header if retry_header is not None else 30.0
         )
+    if status_code == 503 and code == "ROBOTS_CHECK_UNAVAILABLE":
+        # kobe-scraper core/compliance/robots.py unavailable.
+        robots_retry = retry_header
+        if robots_retry is None:
+            try:
+                robots_retry = float(detail_obj["retry_after_s"])
+            except (KeyError, TypeError, ValueError):
+                robots_retry = 30.0
+        reason = detail_obj.get("reason")
+        robots_error = (
+            RobotsExitsRefusedError
+            if reason == "exits_refused"
+            else RobotsCheckUnavailableError
+        )
+        return robots_error(
+            str(detail),
+            reason=reason,
+            host=str(detail_obj.get("host") or ""),
+            retry_after=robots_retry,
+        )
     return ApiError(f"KLOAKD API error {status_code}: {detail}", status_code)
 
 
@@ -287,7 +330,9 @@ def _is_retryable(exc: KloakdError, method: str = "GET") -> bool:
         return False
     if isinstance(exc, RateLimitError):
         return not exc.quota_exhausted
-    if isinstance(exc, BillingUnavailableError):
+    if isinstance(exc, RobotsExitsRefusedError):
+        return False
+    if isinstance(exc, (BillingUnavailableError, RobotsCheckUnavailableError)):
         return True
     if exc.status_code not in _RETRYABLE_STATUS_CODES:
         return False
@@ -297,7 +342,10 @@ def _is_retryable(exc: KloakdError, method: str = "GET") -> bool:
 def _backoff(attempt: int, exc: Optional[KloakdError]) -> float:
     if isinstance(exc, RateLimitError) and exc.retry_after >= 0:
         return min(float(exc.retry_after), _MAX_WAIT)
-    if isinstance(exc, BillingUnavailableError) and exc.retry_after >= 0:
+    if (
+        isinstance(exc, (BillingUnavailableError, RobotsCheckUnavailableError))
+        and exc.retry_after >= 0
+    ):
         return min(float(exc.retry_after), _MAX_WAIT)
     return min(float(2.0**attempt), _MAX_WAIT)
 

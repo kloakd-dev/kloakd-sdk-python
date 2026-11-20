@@ -8,7 +8,18 @@ asynchronous clients cannot drift apart.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Generic, List, Optional, TypeVar, cast, overload
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Generic,
+    List,
+    Optional,
+    Sequence,
+    TypeVar,
+    cast,
+    overload,
+)
 from urllib.parse import quote
 
 T = TypeVar("T")
@@ -81,6 +92,24 @@ def seg(value: Any) -> str:
 def compact(values: Dict[str, Any]) -> Dict[str, Any]:
     """The entries whose value is not None (optional fields left out)."""
     return {k: v for k, v in values.items() if v is not None}
+
+
+#: The request field that acknowledges a robots.txt stop (kobe-scraper
+#: core/compliance/robots.py ``ACK_FIELD``).
+ROBOTS_ACK_FIELD = "robots_acknowledged_hosts"
+
+
+def with_robots_ack(
+    body: Dict[str, Any], hosts: Optional[Sequence[str]]
+) -> Dict[str, Any]:
+    """``body`` with ``robots_acknowledged_hosts`` set when ``hosts`` names any.
+
+    The hosts are sent as given: the API checks them (bare host names, at
+    most 50; 422 otherwise). An acknowledgement counts for that request only.
+    """
+    if hosts:
+        body[ROBOTS_ACK_FIELD] = list(hosts)
+    return body
 
 
 def run(transport: Any, op: Op[T]) -> T:
