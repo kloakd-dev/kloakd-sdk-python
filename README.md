@@ -119,10 +119,13 @@ except KloakdError as e:
 | `ForbiddenError` | 403 | Any other 403: the key may not access this resource |
 | `ConcurrencyLimitError` | 409 | Every work slot of the organisation is in use (`concurrent_limit`, `active_crawls`, `active_requests`, `tier`); not retried. See *Work slots* |
 | `CostAcknowledgementRequiredError` | 409 | A dashboard session started a crawl or crawl-extract whose estimate needs consent without `estimate_id` and `cost_acknowledged=True` (`cost_acknowledgement_required`); an `ApiError`, not retried. API keys are not refused |
+| `RobotsDisallowedError` | 409 | The site's robots.txt stopped the request (`ROBOTS_DISALLOWED`: `reason`, `host`, `rule`, `url`, `redirected_from`, `terms_version`); not retried. See *robots.txt* |
 | `QuotaExceededError` | 429 | GB allocation and top-ups used up (`gb_exhausted`; not retried) |
 | `RateLimitError` | 429 | Request rate exceeded (`retry_after`, `reset_at`; retried). With `quota_exhausted` true it is the playground quota (`quota_used`, `quota_limit`, `upgrade_url`), which does not reset and is not retried |
 | `UpstreamError` | 502 | Target site unreachable |
 | `BillingUnavailableError` | 503 | Usage could not be checked; retried after `retry_after` |
+| `RobotsCheckUnavailableError` | 503 | KLOAKD could not read the site's robots.txt (`ROBOTS_CHECK_UNAVAILABLE`: `reason`, `host`); nothing to acknowledge; retried after `retry_after` |
+| `RobotsExitsRefusedError` | 503 | Every KLOAKD exit refused to connect to the site, so its robots.txt could not be read (`ROBOTS_CHECK_UNAVAILABLE`, `reason` `exits_refused`); a `RobotsCheckUnavailableError`, nothing to acknowledge, not retried |
 | `JobFailedError` / `JobTimeoutError` | — | A handed-off request, fetch job or crawl failed (or expired), or was still running when the wait ran out (`job_id`) |
 | `ApiError` | 4xx/5xx | Any other API error (a 422 keeps the validation messages). `code` holds the API's error code, for example 409 `invalid_batch_transition` and 503 `dispatch_failed` on the batch calls |
 
@@ -130,8 +133,9 @@ Every error has `message`, `status_code` and `code` (the API's error code,
 such as `rate_limited`, or None). A response that is not JSON (a proxy's
 error page) does not crash the client: its text becomes the message.
 
-**Retries:** 429 `rate_limited` and 503 `billing_unavailable` are retried on
-any method, after `Retry-After` (or until `reset_at`). Other 5xx answers and
+**Retries:** 429 `rate_limited`, 503 `billing_unavailable` and 503
+`ROBOTS_CHECK_UNAVAILABLE` (except `exits_refused`) are retried on any
+method, after `Retry-After` (or until `reset_at`). Other 5xx answers and
 network errors are retried only for GET, HEAD and DELETE: a POST, PUT or
 PATCH may already have done its work, so it is never sent twice. At most
 `max_retries` attempts (default 3); `timeout` (default 100 s) applies to
@@ -174,6 +178,67 @@ try:
 except ConcurrencyLimitError as e:
     print(e.tier, e.concurrent_limit, e.active_crawls, e.active_requests)
 ```
+
+## robots.txt
+
+KLOAKD reads a site's robots.txt before it asks for a page. When the file
+disallows the page (`reason` `"disallowed"`), or cannot be read
+(`"unreadable"`: the site answered 5xx, timed out or dropped the
+connection), the call stops before anything is fetched: the API answers
+409 `ROBOTS_DISALLOWED` and the SDK raises `RobotsDisallowedError` with the
+`host`, the `reason` and the `rule`. A missing robots.txt allows everything.
+A page that redirects is judged again where it ends (`redirected_from` is
+then the page you asked for).
+
+To go past a stop, call again with the host named in
+`robots_acknowledged_hosts`. By naming a host you confirm you have the
+right to access its content despite its robots.txt and accept
+responsibility for doing so under the Terms (`terms_version`). KLOAKD
+records each acknowledgement (who, the organisation, the host, when, the
+reason and the terms version). It counts for that request and those hosts
+only: nothing is remembered, so the next request is stopped again unless it
+names the host too. The SDK never acknowledges for you and never retries a
+stop.
+
+```python
+from kloakd import RobotsDisallowedError
+
+url = "https://www.reddit.com/r/Python/"
+try:
+    page = client.evadr.fetch(url)
+except RobotsDisallowedError as e:
+    print(e.reason, e.host, e.rule)  # disallowed www.reddit.com Disallow: /
+    # Only after you have decided you have the right to access it:
+    page = client.evadr.fetch(url, robots_acknowledged_hosts=[e.host])
+```
+
+`robots_acknowledged_hosts` (keyword-only, a list of bare host names such as
+`www.example.com`, with the port when it is not the scheme's own; at most
+50) is taken by every method that fetches a site: `evadr.fetch`,
+`fetch_async`, `fetch_stream`, `scan`, `profile`; `kolektr.page`,
+`page_all`, `extract_all_api_data` (sent there as a query parameter);
+`webgrph.start_crawl`, `crawl`, `crawl_all`, `crawl_stream`,
+`estimate_crawl`, `continue_crawl`, `map_site`, `reader_view`,
+`start_crawl_extract`, `crawl_extract`, `estimate_crawl_extract`,
+`continue_crawl_extract`; `skanyr.sync`; `parlyr.chat`, `chat_stream`;
+`client.unified_scrape`, `create_batch_job`, `crawl` and `crawl_stream`
+(sent with the crawl and with each page's fetch and extraction). It is
+sent only when given; the async client takes it the same way. The API
+answers 422 for a value that is not a bare host or for more than 50.
+
+Two 503 answers are not stops and have nothing to acknowledge:
+`RobotsCheckUnavailableError` (KLOAKD could not ask; retried after
+`retry_after`) and its subclass `RobotsExitsRefusedError` (`reason`
+`"exits_refused"`: every one of KLOAKD's exits refused to connect to the
+site; not retried, since the exits refuse the site, not the moment).
+
+Past its start page, a crawl skips the pages robots.txt stops and lists
+them in its status (`get_crawl_status(...)["robots"]`: `skipped_count`,
+`hosts`, `skipped`, `acknowledged_hosts`). A crawl whose start page is
+stopped once it is running (where it redirected, say) ends failed with
+`error_code` `ROBOTS_DISALLOWED` and the stop in `robots`. A batch item
+that robots.txt stops fails with `ROBOTS_DISALLOWED` in its error. None of
+these raises.
 
 ## Crawls and pages
 

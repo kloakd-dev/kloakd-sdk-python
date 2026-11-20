@@ -23,10 +23,19 @@ modules/parlyr/router.py).
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, Iterator, List, Optional
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    AsyncIterator,
+    Dict,
+    Iterator,
+    List,
+    Optional,
+    Sequence,
+)
 
 from kloakd.models import ChatEvent, ChatTurn, ParseResult
-from kloakd.modules._ops import seg
+from kloakd.modules._ops import seg, with_robots_ack
 
 if TYPE_CHECKING:
     from kloakd._http import _AsyncHttpTransport, _HttpTransport
@@ -35,8 +44,14 @@ if TYPE_CHECKING:
 _END = "end"
 
 
-def _chat_body(session_id: str, message: str) -> Dict[str, Any]:
-    return {"session_id": session_id, "message": message}
+def _chat_body(
+    session_id: str,
+    message: str,
+    robots_acknowledged_hosts: Optional[Sequence[str]] = None,
+) -> Dict[str, Any]:
+    return with_robots_ack(
+        {"session_id": session_id, "message": message}, robots_acknowledged_hosts
+    )
 
 
 def _chat_event(name: str, data: Dict[str, Any]) -> ChatEvent:
@@ -124,7 +139,13 @@ class ParlyrNamespace:
             detected_url=raw.get("detected_url"),
         )
 
-    def chat(self, session_id: str, message: str) -> ChatTurn:
+    def chat(
+        self,
+        session_id: str,
+        message: str,
+        *,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
+    ) -> ChatTurn:
         """
         Send one chat turn and collect its SSE events into a ChatTurn.
 
@@ -139,16 +160,30 @@ class ParlyrNamespace:
         Args:
             session_id: Stable session identifier (you choose the value).
             message: User's message for this turn.
+            robots_acknowledged_hosts: Hosts whose robots.txt stop you
+                acknowledge for this turn (keyword-only): the ``host`` of a
+                RobotsDisallowedError. Recorded by KLOAKD; this turn only.
         """
         builder = _TurnBuilder(session_id)
-        for event in self.chat_stream(session_id, message):
+        for event in self.chat_stream(
+            session_id, message, robots_acknowledged_hosts=robots_acknowledged_hosts
+        ):
             builder.add(event)
         return builder.turn()
 
-    def chat_stream(self, session_id: str, message: str) -> Iterator[ChatEvent]:
-        """Yield the events of one chat turn as they arrive (up to ``end``)."""
+    def chat_stream(
+        self,
+        session_id: str,
+        message: str,
+        *,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
+    ) -> Iterator[ChatEvent]:
+        """Yield the events of one chat turn as they arrive (up to ``end``)
+        (``robots_acknowledged_hosts`` as for ``chat``)."""
         for name, data in self._t.iter_sse(
-            "POST", "parlyr/chat", _chat_body(session_id, message)
+            "POST",
+            "parlyr/chat",
+            _chat_body(session_id, message, robots_acknowledged_hosts),
         ):
             if name == _END:
                 return
@@ -197,6 +232,8 @@ class AsyncParlyrNamespace:
         self,
         session_id: str,
         message: str,
+        *,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> AsyncIterator[AsyncIterator[ChatEvent]]:
         """
         Async SSE event stream for one chat turn.
@@ -207,20 +244,35 @@ class AsyncParlyrNamespace:
                 async for event in events:
                     print(event.type, event.content, event.data)
         """
-        yield self._events(session_id, message)
+        yield self._events(session_id, message, robots_acknowledged_hosts)
 
-    async def _events(self, session_id: str, message: str) -> AsyncIterator[ChatEvent]:
+    async def _events(
+        self,
+        session_id: str,
+        message: str,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
+    ) -> AsyncIterator[ChatEvent]:
         async for name, data in self._t.aiter_sse(
-            "POST", "parlyr/chat", _chat_body(session_id, message)
+            "POST",
+            "parlyr/chat",
+            _chat_body(session_id, message, robots_acknowledged_hosts),
         ):
             if name == _END:
                 return
             yield _chat_event(name, data)
 
-    async def chat(self, session_id: str, message: str) -> ChatTurn:
+    async def chat(
+        self,
+        session_id: str,
+        message: str,
+        *,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
+    ) -> ChatTurn:
         """Async equivalent of ParlyrNamespace.chat."""
         builder = _TurnBuilder(session_id)
-        async for event in self._events(session_id, message):
+        async for event in self._events(
+            session_id, message, robots_acknowledged_hosts
+        ):
             builder.add(event)
         return builder.turn()
 

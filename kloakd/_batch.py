@@ -9,7 +9,7 @@ is built once here and run by both clients (kloakd/modules/_ops.py).
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from kloakd.models import (
     BatchJob,
@@ -21,7 +21,7 @@ from kloakd.models import (
     UnifiedScrapeResult,
     UnifiedScrapeStatus,
 )
-from kloakd.modules._ops import Op, _Op, as_dict, compact, seg
+from kloakd.modules._ops import Op, _Op, as_dict, compact, seg, with_robots_ack
 
 
 def _dicts(value: Any) -> List[Dict[str, Any]]:
@@ -133,6 +133,7 @@ def create_batch_job_op(
     crawl_id: Optional[str],
     entity_type: Optional[str],
     fields: Optional[List[str]],
+    robots_acknowledged_hosts: Optional[Sequence[str]] = None,
 ) -> Op[BatchJob]:
     body = {
         "urls": list(urls),
@@ -145,6 +146,7 @@ def create_batch_job_op(
             }
         ),
     }
+    with_robots_ack(body, robots_acknowledged_hosts)
     return _Op("POST", "batch-jobs", body, parse=parse_batch_job)
 
 
@@ -188,10 +190,11 @@ def unified_scrape_body(
     context: Optional[Dict[str, Any]],
     constraints: Optional[Dict[str, Any]],
     session_artifact_id: Optional[str],
+    robots_acknowledged_hosts: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     """The body of ``POST scraping/unified`` (UnifiedScrapeRequest): the URL
     and only the fields given."""
-    return {
+    body = {
         "url": url,
         **compact(
             {
@@ -205,6 +208,7 @@ def unified_scrape_body(
             }
         ),
     }
+    return with_robots_ack(body, robots_acknowledged_hosts)
 
 
 def get_unified_scrape_op(job_id: str) -> Op[UnifiedScrapeStatus]:

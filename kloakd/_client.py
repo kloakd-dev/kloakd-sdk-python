@@ -19,7 +19,7 @@ Both expose identical namespace APIs::
 
 from __future__ import annotations
 
-from typing import Any, AsyncIterator, Dict, Iterator, List, Optional, Union
+from typing import Any, AsyncIterator, Dict, Iterator, List, Optional, Sequence, Union
 
 from kloakd._artifacts import artifact_content_path, get_artifact_op
 from kloakd._batch import (
@@ -211,6 +211,8 @@ class Kloakd:
         include_external_links: bool = False,
         poll_timeout: float = 300.0,
         poll_interval: float = 2.0,
+        *,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> SiteCrawlResult:
         """
         Crawl a site: discover, fetch, and optionally extract in one call.
@@ -248,6 +250,11 @@ class Kloakd:
             include_external_links: Follow off-domain links.
             poll_timeout: Max seconds to wait for crawl discovery. Default 300.
             poll_interval: Seconds between status polls. Default 2.
+            robots_acknowledged_hosts: Hosts whose robots.txt stop you
+                acknowledge (keyword-only), sent with the crawl and with each
+                page's fetch and extraction: the ``host`` of a
+                RobotsDisallowedError. Recorded by KLOAKD; these requests only.
+                A page robots.txt stops otherwise is marked failed.
 
         Returns:
             SiteCrawlResult with pages, fetch stats, and optional extracted data.
@@ -271,11 +278,14 @@ class Kloakd:
             session_artifact_id=session_artifact_id,
             poll_timeout=poll_timeout,
             poll_interval=poll_interval,
+            robots_acknowledged_hosts=robots_acknowledged_hosts,
         )
 
         pages: List[CrawlPage] = []
         for node in crawl_result.pages:
-            pages.append(self._crawl_page(node.url, extract_schema, session_artifact_id))
+            pages.append(self._crawl_page(
+                node.url, extract_schema, session_artifact_id, robots_acknowledged_hosts
+            ))
         return _site_result(url, crawl_result, pages)
 
     def crawl_stream(
@@ -288,6 +298,8 @@ class Kloakd:
         include_external_links: bool = False,
         poll_timeout: float = 300.0,
         poll_interval: float = 2.0,
+        *,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> Iterator[CrawlProgressEvent]:
         """
         Streaming crawl: yields CrawlProgressEvent as pages are processed.
@@ -321,6 +333,7 @@ class Kloakd:
             session_artifact_id=session_artifact_id,
             poll_timeout=poll_timeout,
             poll_interval=poll_interval,
+            robots_acknowledged_hosts=robots_acknowledged_hosts,
         )
 
         total = crawl_result.total_pages
@@ -345,7 +358,9 @@ class Kloakd:
             yield CrawlProgressEvent(
                 type="page_fetching", url=node.url, page=page_num, total=total
             )
-            page = self._crawl_page(node.url, extract_schema, session_artifact_id)
+            page = self._crawl_page(
+                node.url, extract_schema, session_artifact_id, robots_acknowledged_hosts
+            )
             pages.append(page)
             if page.ok:
                 yield CrawlProgressEvent(
@@ -428,6 +443,8 @@ class Kloakd:
         crawl_id: Optional[str] = None,
         entity_type: Optional[str] = None,
         fields: Optional[List[str]] = None,
+        *,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> BatchJob:
         """Create a batch job: one extraction per URL (``POST batch-jobs``,
         201). ``extraction_config`` says how each URL is extracted (for
@@ -442,8 +459,21 @@ class Kloakd:
         ApiError 422 for an empty list, ConcurrencyLimitError (409) at the
         tier's running batches, and ApiError 503 ``dispatch_failed`` when
         the batch could not be queued (nothing was started). Never
-        retried."""
-        return run(self._transport, create_batch_job_op(urls, extraction_config, crawl_id, entity_type, fields))
+        retried.
+
+        ``robots_acknowledged_hosts`` (keyword-only): hosts whose robots.txt
+        stop you acknowledge for the batch's items (recorded by KLOAKD). An
+        item robots.txt stops otherwise fails with ``ROBOTS_DISALLOWED`` in
+        its error; the batch itself is not refused."""
+        op = create_batch_job_op(
+            urls,
+            extraction_config,
+            crawl_id,
+            entity_type,
+            fields,
+            robots_acknowledged_hosts,
+        )
+        return run(self._transport, op)
 
     def get_batch_job(self, batch_job_id: str) -> BatchJob:
         """A batch job's state (``GET batch-jobs/{batch_job_id}``). A batch
@@ -509,6 +539,8 @@ class Kloakd:
         session_artifact_id: Optional[str] = None,
         poll_interval: float = DEFAULT_POLL_INTERVAL,
         poll_timeout: float = DEFAULT_POLL_TIMEOUT,
+        *,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> UnifiedScrapeResult:
         """Scrape a URL and let the API choose how (``POST
         scraping/unified``): level 1 (direct extraction) or level 2 (the
@@ -530,7 +562,11 @@ class Kloakd:
         Check ``status``: when the scrape fails the API still answers with
         ``success`` true and ``status`` ``"failed"``, without the error
         text, and that answer's ``job_id`` names no stored job, so
-        ``get_unified_scrape`` on it raises ApiError 404."""
+        ``get_unified_scrape`` on it raises ApiError 404.
+
+        ``robots_acknowledged_hosts`` (keyword-only): hosts whose robots.txt
+        stop you acknowledge for this request: the ``host`` of a
+        RobotsDisallowedError (recorded by KLOAKD; this request only)."""
         raw = self._transport.post_following(
             "scraping/unified",
             unified_scrape_body(
@@ -542,6 +578,7 @@ class Kloakd:
                 context,
                 constraints,
                 session_artifact_id,
+                robots_acknowledged_hosts,
             ),
             PollOptions(poll_interval, poll_timeout),
         )
@@ -581,11 +618,16 @@ class Kloakd:
         url: str,
         extract_schema: Optional[ExtractSchema],
         session_artifact_id: Optional[str],
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> CrawlPage:
         """Fetch (and extract) one crawled page. A page error marks only that
         page failed; billing, plan, key and rate-limit errors are raised."""
         try:
-            fetch = self.evadr.fetch(url, session_artifact_id=session_artifact_id)
+            fetch = self.evadr.fetch(
+                url,
+                session_artifact_id=session_artifact_id,
+                robots_acknowledged_hosts=robots_acknowledged_hosts,
+            )
             structured_data: Optional[Dict[str, Any]] = None
             if extract_schema and fetch.success:
                 extraction = self.kolektr.page(
@@ -593,6 +635,7 @@ class Kloakd:
                     schema=extract_schema,
                     fetch_artifact_id=fetch.artifact_id,
                     session_artifact_id=session_artifact_id,
+                    robots_acknowledged_hosts=robots_acknowledged_hosts,
                 )
                 if extraction.records:
                     structured_data = extraction.records[0]
@@ -693,6 +736,8 @@ class AsyncKloakd:
         include_external_links: bool = False,
         poll_timeout: float = 300.0,
         poll_interval: float = 2.0,
+        *,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> SiteCrawlResult:
         """
         Async crawl: discover, fetch, and optionally extract in one call.
@@ -715,11 +760,14 @@ class AsyncKloakd:
             session_artifact_id=session_artifact_id,
             poll_timeout=poll_timeout,
             poll_interval=poll_interval,
+            robots_acknowledged_hosts=robots_acknowledged_hosts,
         )
 
         pages: List[CrawlPage] = []
         for node in crawl_result.pages:
-            pages.append(await self._crawl_page(node.url, extract_schema, session_artifact_id))
+            pages.append(await self._crawl_page(
+                node.url, extract_schema, session_artifact_id, robots_acknowledged_hosts
+            ))
         return _site_result(url, crawl_result, pages)
 
     async def crawl_stream(
@@ -732,6 +780,8 @@ class AsyncKloakd:
         include_external_links: bool = False,
         poll_timeout: float = 300.0,
         poll_interval: float = 2.0,
+        *,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> "AsyncIterator[CrawlProgressEvent]":
         """
         Async streaming crawl: yields CrawlProgressEvent as pages are processed.
@@ -754,6 +804,7 @@ class AsyncKloakd:
             session_artifact_id=session_artifact_id,
             poll_timeout=poll_timeout,
             poll_interval=poll_interval,
+            robots_acknowledged_hosts=robots_acknowledged_hosts,
         )
 
         total = crawl_result.total_pages
@@ -778,7 +829,9 @@ class AsyncKloakd:
             yield CrawlProgressEvent(
                 type="page_fetching", url=node.url, page=page_num, total=total
             )
-            page = await self._crawl_page(node.url, extract_schema, session_artifact_id)
+            page = await self._crawl_page(
+                node.url, extract_schema, session_artifact_id, robots_acknowledged_hosts
+            )
             pages.append(page)
             if page.ok:
                 yield CrawlProgressEvent(
@@ -859,9 +912,19 @@ class AsyncKloakd:
         crawl_id: Optional[str] = None,
         entity_type: Optional[str] = None,
         fields: Optional[List[str]] = None,
+        *,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> BatchJob:
         """Async equivalent of Kloakd.create_batch_job."""
-        return await arun(self._transport, create_batch_job_op(urls, extraction_config, crawl_id, entity_type, fields))
+        op = create_batch_job_op(
+            urls,
+            extraction_config,
+            crawl_id,
+            entity_type,
+            fields,
+            robots_acknowledged_hosts,
+        )
+        return await arun(self._transport, op)
 
     async def get_batch_job(self, batch_job_id: str) -> BatchJob:
         """Async equivalent of Kloakd.get_batch_job."""
@@ -906,6 +969,8 @@ class AsyncKloakd:
         session_artifact_id: Optional[str] = None,
         poll_interval: float = DEFAULT_POLL_INTERVAL,
         poll_timeout: float = DEFAULT_POLL_TIMEOUT,
+        *,
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> UnifiedScrapeResult:
         """Async equivalent of Kloakd.unified_scrape."""
         raw = await self._transport.post_following(
@@ -919,6 +984,7 @@ class AsyncKloakd:
                 context,
                 constraints,
                 session_artifact_id,
+                robots_acknowledged_hosts,
             ),
             PollOptions(poll_interval, poll_timeout),
         )
@@ -943,11 +1009,16 @@ class AsyncKloakd:
         url: str,
         extract_schema: Optional[ExtractSchema],
         session_artifact_id: Optional[str],
+        robots_acknowledged_hosts: Optional[Sequence[str]] = None,
     ) -> CrawlPage:
         """Fetch (and extract) one crawled page. A page error marks only that
         page failed; billing, plan, key and rate-limit errors are raised."""
         try:
-            fetch = await self.evadr.fetch(url, session_artifact_id=session_artifact_id)
+            fetch = await self.evadr.fetch(
+                url,
+                session_artifact_id=session_artifact_id,
+                robots_acknowledged_hosts=robots_acknowledged_hosts,
+            )
             structured_data: Optional[Dict[str, Any]] = None
             if extract_schema and fetch.success:
                 extraction = await self.kolektr.page(
@@ -955,6 +1026,7 @@ class AsyncKloakd:
                     schema=extract_schema,
                     fetch_artifact_id=fetch.artifact_id,
                     session_artifact_id=session_artifact_id,
+                    robots_acknowledged_hosts=robots_acknowledged_hosts,
                 )
                 if extraction.records:
                     structured_data = extraction.records[0]

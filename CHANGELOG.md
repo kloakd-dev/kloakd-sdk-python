@@ -8,6 +8,31 @@ Format: [Semantic Versioning](https://semver.org/). Types: `Added`, `Changed`, `
 
 ## [Unreleased]
 
+### robots.txt acknowledgement (20 November 2026)
+
+For kobe-scraper `core/compliance/robots.py` (robots.txt respected by
+default on every customer route, deployed 19 November 2026). `ROUTES.md`
+lists the routes.
+
+#### Added
+- `robots_acknowledged_hosts` (keyword-only, sync and async): the hosts
+  whose robots.txt stop the caller acknowledges for that request, sent only
+  when given. On `evadr.fetch`, `fetch_async`, `fetch_stream`, `scan`,
+  `profile`; `kolektr.page`, `page_all`, `extract_all_api_data` (as a query
+  parameter); `webgrph.start_crawl`, `crawl`, `crawl_all`, `crawl_stream`,
+  `estimate_crawl`, `continue_crawl`, `map_site`, `reader_view`,
+  `start_crawl_extract`, `crawl_extract`, `estimate_crawl_extract`,
+  `continue_crawl_extract` (a continue with only the hosts sends a body);
+  `skanyr.sync`; `parlyr.chat`, `chat_stream`; `client.unified_scrape`,
+  `create_batch_job`, `crawl`, `crawl_stream`.
+- `RobotsDisallowedError` for 409 `ROBOTS_DISALLOWED` (`reason`, `host`,
+  `rule`, `url`, `redirected_from`, `terms_version`, `acknowledge_field`);
+  not retried. Before, it was an `ApiError` without the host.
+- `RobotsCheckUnavailableError` for 503 `ROBOTS_CHECK_UNAVAILABLE`
+  (`reason`, `host`, `retry_after`), retried after `retry_after` as
+  `billing_unavailable` is; its subclass `RobotsExitsRefusedError` for
+  `reason` `exits_refused`, not retried.
+
 ### Cost control (15 November 2026)
 
 For the cost-control contract of 15 November 2026 (kobe-scraper
